@@ -74,6 +74,23 @@ BACKGROUND_CATEGORIES: dict[str, list[str]] = {
     ],
 }
 
+# Pexels 폴백용 범용 배경 키워드 (주제 무관, 항상 고품질 결과)
+UNIVERSAL_BACKGROUNDS: list[str] = [
+    "city aerial night 4k",
+    "cooking close up satisfying",
+    "ocean waves drone aerial",
+    "rain window close up",
+    "highway traffic night timelapse",
+    "neon lights city street",
+    "coffee shop close up",
+    "nature forest aerial drone",
+    "sunset clouds timelapse",
+    "fireworks celebration night",
+]
+
+# Pexels 최소 파일 크기 (2MB 미만은 저품질로 판단)
+PEXELS_MIN_FILE_SIZE_MB = 2.0
+
 # 배경 영상 저장 경로
 BACKGROUNDS_DIR = os.path.join("data", "backgrounds")
 
@@ -597,11 +614,13 @@ def download_backgrounds(
         logger.warning("PEXELS_API_KEY 미설정 - 그라데이션 배경 사용")
         return _generate_gradient_fallbacks(count, settings, bg_theme=bg_theme)
 
-    keywords = _convert_korean_keywords(keywords)
-    logger.info("Pexels 검색 키워드: %s", keywords[:6])
+    # 범용 배경 키워드 사용 (주제 무관하게 항상 고품질)
+    pexels_keywords = UNIVERSAL_BACKGROUNDS.copy()
+    random.shuffle(pexels_keywords)
+    logger.info("Pexels 범용 키워드: %s", pexels_keywords[:5])
 
     downloaded: list[str] = []
-    for keyword in keywords:
+    for keyword in pexels_keywords:
         if len(downloaded) >= count:
             break
         try:
@@ -620,6 +639,16 @@ def download_backgrounds(
             filepath = os.path.join(settings.temp_dir, filename)
             if _download_file(url, filepath):
                 size_mb = os.path.getsize(filepath) / (1024 * 1024)
+                # 2MB 미만 저품질 영상 스킵
+                if size_mb < PEXELS_MIN_FILE_SIZE_MB:
+                    logger.info("  Pexels 스킵 (저품질): %s (%.1fMB < %.1fMB)", filename, size_mb, PEXELS_MIN_FILE_SIZE_MB)
+                    for attempt in range(3):
+                        try:
+                            os.remove(filepath)
+                            break
+                        except PermissionError:
+                            time.sleep(1)
+                    continue
                 logger.info("  Pexels 다운로드: %s (%.1fMB)", filename, size_mb)
                 if not _check_first_frame_brightness(filepath):
                     for attempt in range(3):

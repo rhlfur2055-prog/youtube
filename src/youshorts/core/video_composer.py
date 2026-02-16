@@ -780,8 +780,8 @@ def compose(
         gradient_colors=gradient_colors,
     )
 
-    # 2. Dark overlay (30% - 배경이 잘 보이도록)
-    logger.info("[2/9] 어둡게 오버레이 (30%%)...")
+    # 2. Dark overlay (25% - 배경이 잘 보이도록)
+    logger.info("[2/9] 어둡게 오버레이 (25%%)...")
     overlay = _build_overlay(total_duration, vw, vh)
 
     # 3. Title bar (상단 고정)

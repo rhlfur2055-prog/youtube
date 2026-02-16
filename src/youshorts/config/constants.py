@@ -48,7 +48,7 @@ KEYWORD_COLORS: list[tuple[int, int, int]] = [
 TRANSITION_INTERVAL: int = 5  # 4-6초 범위 중앙값
 CROSSFADE_DURATION: float = 0.0  # 하드컷 (페이드 없이 바로 전환)
 BG_BLUR_RADIUS: int = 0  # 블러 제거 (만족감 배경은 선명해야 함)
-BG_DARKEN_OPACITY: float = 0.30  # 어둡게 30%만 (배경이 잘 보여야 함)
+BG_DARKEN_OPACITY: float = 0.25  # 어둡게 25%만 (배경이 잘 보여야 함)
 
 # ── Ken Burns ──
 KEN_BURNS_ZOOM_PER_5SEC: float = 0.04  # 줌 효과 강화 (4%)

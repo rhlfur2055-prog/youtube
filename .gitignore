@@ -40,7 +40,16 @@ Thumbs.db
 # Secrets baseline
 .secrets.baseline
 
+# 테스트/분석/임시 파일 (다시 올라오지 않도록)
+test_*.py
+test_*.txt
+*_test.py
+inspect_*.py
+analyze_*.py
+find_*.py
+output/*.mp4
+output/screenshots/
+
 nul
 .claude/worktrees/
 .claude/
-nul
