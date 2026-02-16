@@ -39,9 +39,9 @@ from youshorts.utils.logger import setup_logging
 # TTS 음성 로테이션 (AI 슬롭 방지 - 3개 음성 사용)
 # ============================================================
 _EDGE_TTS_VOICES: list[str] = [
-    "ko-KR-SunHiNeural",    # 여성 (밝고 자연스러운)
-    "ko-KR-InJoonNeural",   # 남성 (차분한)
+    "ko-KR-InJoonNeural",   # 남성 (차분한, 기본)
     "ko-KR-HyunsuNeural",   # 남성 (에너지 있는)
+    "ko-KR-SunHiNeural",    # 여성 (밝고 자연스러운)
 ]
 
 _ELEVENLABS_VOICE_IDS: list[str] = [

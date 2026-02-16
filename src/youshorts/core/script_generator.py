@@ -539,10 +539,8 @@ def select_topic(
 ) -> str:
     """주제를 자동 선정합니다.
 
-    우선순위:
-    1. 사용자 직접 지정 (--topic)
-    2. 실시간 트렌드 크롤링 (Apify)
-    3. TRENDING_TOPICS 폴백 풀에서 랜덤 (이전 사용 주제 제외)
+    SAFE_FALLBACK_TOPICS(커뮤 썰 33개)에서 랜덤 선택.
+    레퍼런스 채널(썰레몬, 심심한회사원) 스타일 - 트렌드 불필요.
 
     Args:
         topic_override: 사용자 지정 주제.
@@ -563,34 +561,29 @@ def select_topic(
     # 이전 사용 주제 로드 (중복 방지)
     used_topics = set(_load_topic_history(settings))
 
-    # 2순위: 실시간 트렌드 크롤링
-    try:
-        trend_topics = fetch_trending_topics(settings)
-        if trend_topics:
-            # 이전에 쓴 주제 제외 + 유효성 필터 적용
-            available = [
-                t for t in trend_topics
-                if t not in used_topics and _is_valid_trend_topic(t)
-            ]
-            if available:
-                selected = random.choice(available)
-                # 클릭 유발 제목으로 변환
-                selected = _make_clickbait_title(selected)
-                logger.info("트렌드 주제 선정: %s", selected)
-                return selected
-            else:
-                logger.info("트렌드 %d개 모두 필터링됨 → 폴백 사용", len(trend_topics))
-    except Exception as e:
-        logger.debug("트렌드 크롤링 실패: %s - 폴백 주제 풀 사용", e)
+    # [비활성화] Google Trends 크롤링 - 커뮤 썰 스타일에는 불필요
+    # try:
+    #     trend_topics = fetch_trending_topics(settings)
+    #     if trend_topics:
+    #         available = [
+    #             t for t in trend_topics
+    #             if t not in used_topics and _is_valid_trend_topic(t)
+    #         ]
+    #         if available:
+    #             selected = random.choice(available)
+    #             selected = _make_clickbait_title(selected)
+    #             logger.info("트렌드 주제 선정: %s", selected)
+    #             return selected
+    # except Exception as e:
+    #     logger.debug("트렌드 크롤링 실패: %s", e)
 
-    # 3순위: TRENDING_TOPICS에서 랜덤 (이전 사용 주제 제외)
+    # SAFE_FALLBACK_TOPICS(커뮤 썰 33개)에서 랜덤 선택
     available = [t for t in TRENDING_TOPICS if t not in used_topics]
     if not available:
-        # 전부 사용했으면 다시 전체 풀에서 선택
         available = TRENDING_TOPICS.copy()
 
     selected = random.choice(available)
-    logger.info("폴백 주제 선정: %s", selected)
+    logger.info("커뮤 썰 주제 선정: %s", selected)
     return selected
 
 

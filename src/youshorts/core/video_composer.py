@@ -791,12 +791,16 @@ def compose(
     title_bar_clip = _img_to_clip_pos(title_bar_img, total_duration, 0, x=0, y=0)
     title_bar_clip = title_bar_clip.fadein(0.5)
 
-    # 4. Bottom bar
-    logger.info("[4/9] 하단 채널명 바...")
-    bottom_bar_img = create_bottom_bar(settings.channel_name)
-    bottom_bar_clip = _img_to_clip_pos(
-        bottom_bar_img, total_duration, 0, x=0, y=vh - BOTTOM_BAR_HEIGHT,
-    )
+    # 4. Bottom bar (채널명이 비어있으면 생략)
+    bottom_bar_clip = None
+    if settings.channel_name:
+        logger.info("[4/9] 하단 채널명 바...")
+        bottom_bar_img = create_bottom_bar(settings.channel_name)
+        bottom_bar_clip = _img_to_clip_pos(
+            bottom_bar_img, total_duration, 0, x=0, y=vh - BOTTOM_BAR_HEIGHT,
+        )
+    else:
+        logger.info("[4/9] 하단 채널명 바 생략 (채널명 미설정)")
 
     # 5. Progress bar (상단 3px 얇은 라인)
     logger.info("[5/9] 프로그레스 바 (상단 3px)...")
@@ -824,8 +828,9 @@ def compose(
 
     # 9. Composite
     logger.info("[9/9] 레이어 합성 + 오디오...")
+    base_clips = [background, overlay, title_bar_clip, bottom_bar_clip, progress_bar]
     all_clips = (
-        [background, overlay, title_bar_clip, bottom_bar_clip, progress_bar]
+        [c for c in base_clips if c is not None]
         + subtitle_clips + ve_clips + [outro_clip]
     )
     video = CompositeVideoClip(all_clips, size=(vw, vh)).set_duration(total_duration)

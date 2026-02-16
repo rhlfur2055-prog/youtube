@@ -121,9 +121,9 @@ class Settings(BaseSettings):
     # 변경 사유: enhanced 엔진 (ElevenLabs 우선, edge-tts 폴백)
     # 전체 텍스트를 한 번에 전송하여 끊김 없는 자연스러운 음성 생성
     tts_engine: str = "enhanced"  # "enhanced" | "legacy"
-    tts_voice: str = "ko-KR-SunHiNeural"  # 변경: 자연스러운 여성 음성
-    tts_rate: str = "+0%"  # 변경: 인위적 변조 제거 (기본 속도)
-    tts_pitch: str = "+0Hz"  # 변경: 인위적 변조 제거 (기본 피치)
+    tts_voice: str = "ko-KR-InJoonNeural"  # 변경: 자연스러운 남성 음성 (기계음 해소)
+    tts_rate: str = "+10%"  # 변경: 약간 빠르게 (자연스러운 템포)
+    tts_pitch: str = "+0Hz"  # 기본 피치 유지
     sentence_pause_ms: int = 200
 
     # Enhanced TTS (ElevenLabs 1순위 → OpenAI 2순위 → edge-tts 3순위)
@@ -161,7 +161,7 @@ class Settings(BaseSettings):
     enable_whoosh: bool = False
 
     # ── Channel ──
-    channel_name: str = "AI Knowledge"
+    channel_name: str = ""  # 빈값 = 워터마크 비활성화
 
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
