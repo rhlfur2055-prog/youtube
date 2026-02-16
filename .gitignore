@@ -1,0 +1,46 @@
+# 보안 - 절대 커밋 금지
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 프로젝트 출력물
+outputs/
+!outputs/.gitkeep
+*.mp4
+*.mp3
+*.wav
+generation_history.json
+
+# Temp & data
+temp/
+data/
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets baseline
+.secrets.baseline
+
+nul
+.claude/worktrees/
+.claude/
+nul

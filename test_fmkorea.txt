@@ -1,0 +1,61 @@
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> Status: RUNNING, Message: 
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:53.360Z ACTOR: Pulling container image of build q6Qfd5HQPFc246e9C from registry.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:53.363Z ACTOR: Creating container.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:53.482Z ACTOR: Starting container.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:53.484Z ACTOR: Running under "LIMITED_PERMISSIONS" permission level.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:53.766Z Will run command: xvfb-run -a -s "-ac -screen 0 1920x1080x24+32 -nolisten tcp" /bin/sh -c ./start_xvfb_and_run_cmd.sh && ./run_protected.sh npm run start:prod --silent
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:55.898Z [32mINFO[39m  System info[90m {"apifyVersion":"3.5.2","apifyClientVersion":"2.20.0","crawleeVersion":"3.16.0","osType":"Linux","nodeVersion":"v22.20.0"}[39m
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:56.528Z [32mINFO[39m  Crawling will be started using 1 start URLs and 0 sitemap URLs
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> Status: RUNNING, Message: Starting the crawler.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> Status: RUNNING, Message: Crawled 0/1 pages, 0 failed requests, desired concurrency 2.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> Status: RUNNING, Message: Crawled 0/1 pages, 0 failed requests, desired concurrency 3.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:26:57.285Z [32mINFO[39m [33m PlaywrightCrawler:[39m Starting the crawler.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:24.510Z [33mWARN[39m [33m PlaywrightCrawler:[39m Reached max crawl depth of 0 for https://www.fmkorea.com/best, not enqueueing from this URL.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:24.521Z [32mINFO[39m [33m PlaywrightCrawler:[39m The crawler reached the maxCrawlDepth limit of 0 and no further requests will be enqueued.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:24.551Z [32mINFO[39m [33m PlaywrightCrawler:[39m The crawler has been gracefully stopped.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:24.587Z [32mINFO[39m [33m PlaywrightCrawler:[39m No new requests are allowed because the `stop()` method has been called. Ongoing requests will be allowed to complete.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:24.588Z [32mINFO[39m [33m PlaywrightCrawler:[39m The crawler has finished all the remaining ongoing requests and will shut down now.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:25.173Z [33mWARN[39m  Main crawler processed all start URLs, checking if SitemapCrawler can be shut down...
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:25.175Z [33mWARN[39m  Shutting down SitemapCrawler, waiting for the main crawler to finish...
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:25.287Z [33mWARN[39m  Main crawler finished successfully, exiting the run...
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:25.398Z [32mINFO[39m [33m PlaywrightCrawler:[39m Final request statistics:[90m {"requestsFinished":1,"requestsFailed":0,"retryHistogram":[1],"requestAvgFailedDurationMillis":null,"requestAvgFinishedDurationMillis":27249,"requestsFinishedPerMinute":2,"requestsFailedPerMinute":0,"requestTotalDurationMillis":27249,"requestsTotal":1,"crawlerRuntimeMillis":28590}[39m
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> Status: RUNNING, Message: Finished! Total 1 requests: 1 succeeded, 0 failed.
+[36m[apify.website-content-crawler runId:noDsBOum3ZwbPDufk][0m -> 2026-02-15T08:27:25.400Z [32mINFO[39m [33m PlaywrightCrawler:[39m Finished! Total 1 requests: 1 succeeded, 0 failed.[90m {"terminal":true}[39m
+  FFmpeg: C:\Users\jomg2\AppData\Local\Programs\Python\Python310\lib\site-packages\imageio_ffmpeg\binaries\ffmpeg-win-x86_64-v7.1.exe
+
+🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬
+  YouTube Shorts 팩토리 v5.0 'The Viral Machine'
+  🌐 멀티플랫폼 + 🔥 바이럴 프롬프트 + 🎵 드론 BGM + ⚡ 바이럴 가산점 정렬
+🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬
+
+============================================================
+🕷️  Stage 1: 크롤링 + 스크린샷
+  소스: 에펨코리아
+============================================================
+  🔗 목록 URL: https://www.fmkorea.com/best
+  📡 [1단계] 글 목록에서 개별 URL 추출 중...
+  ⚠️  requests HTML에서 URL 미발견
+  📡 requests 실패, Apify로 1단계 재시도...
+  ⚠️  개별 글 URL을 찾지 못했습니다. 폴백 시도...
+  🎨 텍스트 기반 스크린샷 생성 중...
+  ✅ 6장 스크린샷 이미지 생성
+
+🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬
+  [1/1] 에펨코리아 보안 시스템
+🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬🎬
+
+============================================================
+📝 Stage 2: 대본 생성
+  제목: 에펨코리아 보안 시스템...
+============================================================
+  ⚠️  소스 내용 부족 (187자), 건너뜀
+  ⏭️  소스 품질 부족, 건너뜀
+
+============================================================
+📊 최종 리포트
+============================================================
+  ⏱️  소요시간: 41.3초
+  🎬 생성 영상: 0개
+============================================================
+
+😢 생성된 영상 없음
