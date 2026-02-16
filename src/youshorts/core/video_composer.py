@@ -792,35 +792,35 @@ def compose(
     title_bar_clip = title_bar_clip.fadein(0.5)
 
     # 4. Bottom bar
-    logger.info("[4/8] 하단 채널명 바...")
+    logger.info("[4/9] 하단 채널명 바...")
     bottom_bar_img = create_bottom_bar(settings.channel_name)
     bottom_bar_clip = _img_to_clip_pos(
         bottom_bar_img, total_duration, 0, x=0, y=vh - BOTTOM_BAR_HEIGHT,
     )
 
     # 5. Progress bar (상단 3px 얇은 라인)
-    logger.info("[5/8] 프로그레스 바 (상단 3px)...")
+    logger.info("[5/9] 프로그레스 바 (상단 3px)...")
     progress_bar = _build_progress_bar(total_duration, vw)
 
-    # 6. Subtitles (WordBoundary 기반 8-12글자 청크)
-    logger.info("[6/8] 자막 생성 (70px Bold, 청크 기반)...")
+    # 6. Subtitles (레퍼런스 채널 스타일: 정중앙 80px, 단어별 색상 강조)
+    logger.info("[6/9] 자막 생성 (80px Bold, 정중앙, 단어별 색상 강조)...")
     subtitle_clips = _build_subtitle_clips(
         words, script, time_offset=0.0, total_dur=total_duration, video_height=vh,
     )
     logger.info("  %d개 자막 클립", len(subtitle_clips))
 
     # 7. Visual effects
-    logger.info("[7/8] 시각 효과 (인포그래픽 + 페이드인)...")
+    logger.info("[7/9] 시각 효과 (인포그래픽 + 페이드인)...")
     visual_effects = generate_visual_effects_for_script(script, total_duration)
     ve_clips = _build_visual_effect_clips(visual_effects, vh)
     logger.info("  %d개 효과 클립", len(ve_clips))
 
-    # 8. 아웃트로 "좋아요 & 구독" 오버레이 (마지막 3초)
+    # 8. 아웃트로 "좋아요 & 구독" 오버레이 (마지막 2초)
     logger.info("[8/9] 아웃트로 '좋아요 & 구독' 오버레이...")
     outro_img = _create_outro_overlay(vw, vh)
-    outro_start = max(0, total_duration - 3.5)
-    outro_clip = _img_to_clip(outro_img, 3.5, outro_start, y_ratio=0.5, video_height=vh)
-    outro_clip = outro_clip.fadein(0.5).fadeout(0.3)
+    outro_start = max(0, total_duration - 2.0)
+    outro_clip = _img_to_clip(outro_img, 2.0, outro_start, y_ratio=0.5, video_height=vh)
+    outro_clip = outro_clip.fadein(0.3).fadeout(0.5)
 
     # 9. Composite
     logger.info("[9/9] 레이어 합성 + 오디오...")
@@ -864,8 +864,8 @@ def compose(
 
     final_audio = CompositeAudioClip(audio_clips)
     video = video.set_audio(final_audio)
-    # 변경 사유: 인트로 0.5초 페이드인, 아웃트로 1.0초 페이드아웃 (한국형)
-    video = video.fadein(0.5).fadeout(1.0)
+    # 변경 사유: 인트로 0.3초 페이드인, 아웃트로 0.5초 페이드아웃 (빠른 시작)
+    video = video.fadein(0.3).fadeout(0.5)
 
     # Render
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

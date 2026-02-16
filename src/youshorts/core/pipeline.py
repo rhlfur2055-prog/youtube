@@ -377,9 +377,9 @@ class Pipeline:
                 "search_keywords", ["seoul city", "korea aerial", "korean lifestyle", "urban night"],
             )
             bg_theme = self.result.script.get("bg_theme", "")
-            # 변경 사유: 배경 영상 최소 5개 다운로드 (4-6초 컷 전환용)
+            # 변경 사유: 배경 클립 10~12개 (4~6초 하드컷 전환, 60초 영상 기준)
             self.result.bg_paths = download_backgrounds(
-                keywords, count=5, bg_theme=bg_theme, settings=self.settings,
+                keywords, count=12, bg_theme=bg_theme, settings=self.settings,
             )
         self._step_done(step, total, "배경 영상 다운로드")
 
