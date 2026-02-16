@@ -536,11 +536,11 @@ def select_topic(
     topic_override: str | None = None,
     style: str = "creative",
     settings: Settings | None = None,
-) -> str:
+) -> dict[str, str]:
     """주제를 자동 선정합니다.
 
-    SAFE_FALLBACK_TOPICS(커뮤 썰 33개)에서 랜덤 선택.
-    레퍼런스 채널(썰레몬, 심심한회사원) 스타일 - 트렌드 불필요.
+    1순위: 커뮤니티 실시간 인기글 크롤링 (CommunityCrawler)
+    2순위: 정적 TRENDING_TOPICS 폴백
 
     Args:
         topic_override: 사용자 지정 주제.
@@ -548,7 +548,7 @@ def select_topic(
         settings: 설정 인스턴스.
 
     Returns:
-        선정된 주제 문자열.
+        {"title": str, "body": str, "source": str} 딕셔너리.
     """
     if settings is None:
         settings = get_settings()
@@ -556,35 +556,56 @@ def select_topic(
     # 1순위: 사용자 직접 지정
     if topic_override:
         logger.info("사용자 지정 주제: %s", topic_override)
-        return topic_override
+        return {"title": topic_override, "body": "", "source": "manual"}
 
     # 이전 사용 주제 로드 (중복 방지)
     used_topics = set(_load_topic_history(settings))
 
-    # [비활성화] Google Trends 크롤링 - 커뮤 썰 스타일에는 불필요
+    # 2순위: 커뮤니티 실시간 인기글 크롤링
+    try:
+        from youshorts.core.community_crawler import CommunityCrawler
+        crawler = CommunityCrawler()
+        posts = crawler.pick_best(count=3)
+        if posts:
+            for post in posts:
+                if post["title"] not in used_topics:
+                    logger.info(
+                        "커뮤니티 인기글 선정: '%s' (소스: %s, 점수: %s)",
+                        post["title"][:30],
+                        post.get("source", "?"),
+                        post.get("score", "?"),
+                    )
+                    return {
+                        "title": post["title"],
+                        "body": post.get("body", ""),
+                        "source": post.get("source", "community"),
+                    }
+            # 모두 중복이면 1등 강제 사용
+            best = posts[0]
+            logger.info("커뮤니티 인기글 (중복 허용): '%s'", best["title"][:30])
+            return {
+                "title": best["title"],
+                "body": best.get("body", ""),
+                "source": best.get("source", "community"),
+            }
+    except Exception as e:
+        logger.warning("커뮤니티 크롤링 실패: %s - 폴백 주제 사용", e)
+
+    # [비활성화] Google Trends 크롤링 - community_crawler.py에서 통합 관리
     # try:
     #     trend_topics = fetch_trending_topics(settings)
-    #     if trend_topics:
-    #         available = [
-    #             t for t in trend_topics
-    #             if t not in used_topics and _is_valid_trend_topic(t)
-    #         ]
-    #         if available:
-    #             selected = random.choice(available)
-    #             selected = _make_clickbait_title(selected)
-    #             logger.info("트렌드 주제 선정: %s", selected)
-    #             return selected
+    #     ...
     # except Exception as e:
     #     logger.debug("트렌드 크롤링 실패: %s", e)
 
-    # SAFE_FALLBACK_TOPICS(커뮤 썰 33개)에서 랜덤 선택
+    # 3순위: TRENDING_TOPICS 폴백
     available = [t for t in TRENDING_TOPICS if t not in used_topics]
     if not available:
         available = TRENDING_TOPICS.copy()
 
     selected = random.choice(available)
-    logger.info("커뮤 썰 주제 선정: %s", selected)
-    return selected
+    logger.info("폴백 주제 선정: %s", selected)
+    return {"title": selected, "body": "", "source": "fallback"}
 
 
 def _make_clickbait_title(keyword: str) -> str:

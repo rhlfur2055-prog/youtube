@@ -134,13 +134,25 @@ def run_single_production(
     """
     logger = logging.getLogger("youshorts")
 
-    # 주제 자동 선정 (트렌드 → 폴백 → 수동)
+    # 주제 자동 선정 (커뮤니티 크롤러 → 폴백 → 수동)
+    source_text = ""
     if not topic:
         from youshorts.core.script_generator import select_topic
-        topic = select_topic(topic_override=None, style=style)
+        topic_info = select_topic(topic_override=None, style=style)
+        # select_topic()은 dict 반환: {title, body, source}
+        if isinstance(topic_info, dict):
+            topic = topic_info.get("title", "")
+            source_text = topic_info.get("body", "")
+            source_name = topic_info.get("source", "unknown")
+        else:
+            # 호환성: 혹시 str이 반환되면
+            topic = topic_info
+            source_name = "legacy"
 
     logger.info("=" * 60)
     logger.info(f"영상 생성 시작: {topic}")
+    if source_text:
+        logger.info(f"  소스: {source_name} ({len(source_text)}자)")
     logger.info(f"스타일: {style}, TTS: {tts_engine}, 렌더러: {renderer or 'auto'}")
     logger.info("=" * 60)
 
@@ -166,6 +178,7 @@ def run_single_production(
             no_pexels=no_pexels,
             renderer=renderer,
             settings=settings,
+            source_text=source_text,
         )
 
         result = pipeline.run()

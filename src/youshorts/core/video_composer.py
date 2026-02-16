@@ -591,14 +591,19 @@ def _build_subtitle_clips(
     time_offset: float,
     total_dur: float,
     video_height: int,
+    font_size_override: int | None = None,
+    y_ratio_override: float | None = None,
+    highlight_color_override: tuple[int, int, int] | None = None,
 ) -> list[ImageClip]:
     """자막 클립 리스트를 생성합니다.
 
     community 스타일: subtitle_chunks의 emotion/highlight 정보를 자막에 반영합니다.
+    랜덤화 파라미터를 받아 AI 탐지 회피에 활용합니다.
     """
     clips: list[ImageClip] = []
     keywords = script.get("keywords", [])
     color_idx = 0
+    y_ratio = y_ratio_override if y_ratio_override is not None else SUBTITLE_Y_RATIO
 
     # community 스타일 subtitle_chunks에서 emotion/highlight 매핑 구축
     sub_chunks = script.get("subtitle_chunks", [])
@@ -644,9 +649,11 @@ def _build_subtitle_clips(
             section=section,
             emotion=emotion,
             highlight=highlight,
+            font_size_override=font_size_override,
+            highlight_color_override=highlight_color_override,
         )
 
-        clip = _img_to_clip(img, dur, start, y_ratio=SUBTITLE_Y_RATIO, video_height=video_height)
+        clip = _img_to_clip(img, dur, start, y_ratio=y_ratio, video_height=video_height)
         # 자막 페이드인/아웃 0.1초
         clip = clip.fadein(0.1).fadeout(0.1)
         clips.append(clip)
@@ -724,6 +731,38 @@ def _build_visual_effect_clips(
     return clips
 
 
+def _randomize_video_params() -> dict[str, Any]:
+    """AI 탐지 회피용 영상 파라미터 랜덤화.
+
+    매 영상마다 자막/배경/타이틀 파라미터를 미세하게 변경하여
+    동일 채널의 영상이 똑같이 보이지 않도록 합니다.
+
+    Returns:
+        랜덤화된 파라미터 딕셔너리.
+    """
+    highlight_colors = [
+        (255, 215, 0),    # 골드
+        (0, 220, 255),    # 시안
+        (255, 105, 180),  # 핑크
+        (100, 255, 100),  # 그린
+        (255, 165, 0),    # 오렌지
+    ]
+    return {
+        # 자막
+        "subtitle_font_size": random.randint(70, 90),
+        "subtitle_y_ratio": round(random.uniform(0.40, 0.55), 2),
+        "highlight_color": random.choice(highlight_colors),
+        # 배경 어둡기
+        "bg_darken_opacity": round(random.uniform(0.18, 0.35), 2),
+        # 타이틀 바
+        "title_bar_opacity": round(random.uniform(0.5, 0.8), 2),
+        "title_font_size": random.randint(28, 38),
+        "title_y_pct": round(random.uniform(0.02, 0.08), 3),
+        # 영상 길이 (40~70초)
+        "target_duration_range": (40, 70),
+    }
+
+
 def compose(
     bg_paths: list[str],
     tts_path: str,
@@ -762,6 +801,15 @@ def compose(
         edit_style = random.choice(EDIT_STYLES)
     logger.info("편집 스타일: %s", edit_style)
 
+    # ── AI 탐지 회피: 영상별 랜덤 파라미터 ──
+    rp = _randomize_video_params()
+    logger.info(
+        "[랜덤화] 자막=%dpx y=%.2f / 배경어둡기=%.2f / 타이틀=%.0f%% %dpx",
+        rp["subtitle_font_size"], rp["subtitle_y_ratio"],
+        rp["bg_darken_opacity"],
+        rp["title_bar_opacity"] * 100, rp["title_font_size"],
+    )
+
     # 스크린샷 배경 여부 감지 (textss_*.png 또는 screenshot_*.png)
     is_screenshot_bg = any(
         os.path.basename(p).startswith(("textss_", "screenshot_"))
@@ -780,15 +828,26 @@ def compose(
         gradient_colors=gradient_colors,
     )
 
-    # 2. Dark overlay (25% - 배경이 잘 보이도록)
-    logger.info("[2/9] 어둡게 오버레이 (25%%)...")
-    overlay = _build_overlay(total_duration, vw, vh)
+    # 2. Dark overlay (랜덤 어둡기)
+    rand_darken = rp["bg_darken_opacity"]
+    logger.info("[2/9] 어둡게 오버레이 (%.0f%%)...", rand_darken * 100)
+    overlay = (
+        ColorClip((vw, vh), color=(0, 0, 0))
+        .set_opacity(rand_darken)
+        .set_duration(total_duration)
+    )
 
-    # 3. Title bar (상단 고정)
-    logger.info("[3/9] 상단 타이틀 바...")
+    # 3. Title bar (랜덤 투명도/폰트크기/위치)
+    logger.info("[3/9] 상단 타이틀 바 (랜덤: %dpx, %.0f%%)...",
+                rp["title_font_size"], rp["title_bar_opacity"] * 100)
     title = script.get("title", "")
-    title_bar_img = create_title_bar(title)
-    title_bar_clip = _img_to_clip_pos(title_bar_img, total_duration, 0, x=0, y=0)
+    title_bar_img = create_title_bar(
+        title,
+        font_size_override=rp["title_font_size"],
+        opacity_override=rp["title_bar_opacity"],
+    )
+    title_y = int(vh * rp["title_y_pct"])
+    title_bar_clip = _img_to_clip_pos(title_bar_img, total_duration, 0, x=0, y=title_y)
     title_bar_clip = title_bar_clip.fadein(0.5)
 
     # 4. Bottom bar (채널명이 비어있으면 생략)
@@ -806,10 +865,14 @@ def compose(
     logger.info("[5/9] 프로그레스 바 (상단 3px)...")
     progress_bar = _build_progress_bar(total_duration, vw)
 
-    # 6. Subtitles (레퍼런스 채널 스타일: 정중앙 80px, 단어별 색상 강조)
-    logger.info("[6/9] 자막 생성 (80px Bold, 정중앙, 단어별 색상 강조)...")
+    # 6. Subtitles (랜덤 폰트크기/위치/강조색)
+    logger.info("[6/9] 자막 생성 (%dpx, y=%.2f, 랜덤 강조색)...",
+                rp["subtitle_font_size"], rp["subtitle_y_ratio"])
     subtitle_clips = _build_subtitle_clips(
         words, script, time_offset=0.0, total_dur=total_duration, video_height=vh,
+        font_size_override=rp["subtitle_font_size"],
+        y_ratio_override=rp["subtitle_y_ratio"],
+        highlight_color_override=rp["highlight_color"],
     )
     logger.info("  %d개 자막 클립", len(subtitle_clips))
 

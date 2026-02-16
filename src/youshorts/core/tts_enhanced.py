@@ -72,6 +72,43 @@ except ImportError:
     if not _FFMPEG_EXE:
         logger.warning("[ffmpeg] ffmpeg를 찾을 수 없습니다")
 
+# ── TTS 전처리 (자막은 원본 유지, TTS 음성에만 적용) ──
+
+def preprocess_script_for_tts(text: str) -> str:
+    """TTS용 전처리. 초성/줄임말 제거, 쉼표로 자연스러운 끊김.
+
+    자막에는 원본 텍스트 그대로 표시 (ㅋㅋ, ㄹㅇ 포함).
+    TTS 음성에만 이 전처리된 버전을 사용합니다.
+
+    Args:
+        text: 원본 대본 텍스트.
+
+    Returns:
+        TTS용으로 전처리된 텍스트.
+    """
+    result = text
+    # 초성 반복 제거 (TTS가 못 읽으니 빼기)
+    result = re.sub(r"ㅋ{2,}", "", result)
+    result = re.sub(r"ㅎ{2,}", "", result)
+    result = re.sub(r"ㅠ{2,}", "", result)
+    result = re.sub(r"ㄷ{2,}", "", result)
+    # 인터넷 줄임말 제거
+    result = result.replace("ㄹㅇ", "")
+    result = result.replace("ㅇㅈ", "")
+    result = result.replace("ㄱㄱ", "")
+    result = result.replace("ㅇㅇ", "")
+    result = result.replace("ㅂㅂ", "")
+    result = result.replace("ㄴㄴ", "")
+    # ".." / "..." → 쉼표 (자연스러운 끊김)
+    result = result.replace("...", ", ")
+    result = result.replace("..", ", ")
+    # 연속 쉼표 정리
+    result = re.sub(r",\s*,+", ",", result)
+    # 연속 공백 정리
+    result = re.sub(r"\s+", " ", result)
+    return result.strip()
+
+
 # ── 캐시 디렉토리 ──
 CACHE_DIR = Path("cache/tts")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -554,6 +591,10 @@ def generate_fitted_tts(
     ensure_dir(settings.temp_dir)
     chunk_size = getattr(settings, "subtitle_chunk_size", 10)
 
+    # ── TTS 전처리 (자막은 원본 text 유지, TTS 음성에만 적용) ──
+    tts_text = preprocess_script_for_tts(text)
+    logger.debug("TTS 전처리: %d자 → %d자", len(text), len(tts_text))
+
     # ── 캐시 확인 ──
     cache_enabled = getattr(settings, "tts_cache_enabled", True)
     cache_path = _get_cache_path(text, "elevenlabs")
@@ -581,7 +622,7 @@ def generate_fitted_tts(
             if elevenlabs_key and not tts_generated:
                 try:
                     _generate_elevenlabs_full_text(
-                        text=text,
+                        text=tts_text,
                         output_path=audio_path,
                         voice_id=getattr(settings, "elevenlabs_voice_id", ""),
                         stability=0.5,
@@ -600,7 +641,7 @@ def generate_fitted_tts(
             if openai_key and not tts_generated:
                 try:
                     _generate_openai_tts_full_text(
-                        text=text,
+                        text=tts_text,
                         output_path=audio_path,
                         voice=getattr(settings, "openai_tts_voice", "onyx"),
                         model=getattr(settings, "openai_tts_model", "tts-1-hd"),
@@ -616,7 +657,7 @@ def generate_fitted_tts(
             # 3순위: edge-tts (최종 폴백, 무료)
             if not tts_generated:
                 _generate_edge_tts_full_text(
-                    text=text,
+                    text=tts_text,
                     output_path=audio_path,
                     voice=settings.tts_voice,
                     rate=settings.tts_rate,

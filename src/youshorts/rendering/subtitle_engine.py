@@ -92,12 +92,13 @@ def _get_word_color(
     word: str,
     keywords: list[str],
     highlight: str = "",
+    highlight_color_override: tuple[int, int, int] | None = None,
 ) -> tuple[int, int, int]:
     """단어의 강조 색상을 결정합니다.
 
     우선순위:
-    1. highlight 단어 → 노란색
-    2. 숫자/통계 (%, 억, 만, 원) → 노란색
+    1. highlight 단어 → 강조색 (기본 노란색, 오버라이드 가능)
+    2. 숫자/통계 (%, 억, 만, 원) → 강조색
     3. 감정 키워드 → 빨간색
     4. keywords 리스트에 포함 → 하늘색
     5. 기본 → 흰색
@@ -106,23 +107,25 @@ def _get_word_color(
         word: 분석할 단어.
         keywords: 대본에서 강조할 키워드 리스트.
         highlight: 특별 강조 단어.
+        highlight_color_override: 강조 색상 오버라이드 (AI 탐지 회피).
 
     Returns:
         RGB 색상 튜플.
     """
     clean_word = word.strip(".,!?~…()[]{}\"' ")
+    hl_color = highlight_color_override if highlight_color_override else COLOR_NUMBER
 
-    # 1. highlight 매칭 → 노란색
+    # 1. highlight 매칭 → 강조색
     if highlight and highlight in clean_word:
-        return COLOR_NUMBER
+        return hl_color
 
-    # 2. 숫자/통계 패턴 → 노란색
+    # 2. 숫자/통계 패턴 → 강조색
     if re.search(r'\d', clean_word):
-        return COLOR_NUMBER
+        return hl_color
     number_suffixes = ["억", "만", "원", "천", "백", "조", "명", "개", "건", "배"]
     for suffix in number_suffixes:
         if clean_word.endswith(suffix) and len(clean_word) > 1:
-            return COLOR_NUMBER
+            return hl_color
 
     # 3. 감정 키워드 → 빨간색
     for ek in EMOTION_KEYWORDS:
@@ -146,12 +149,14 @@ def create_subtitle_image(
     section: str = "content",
     emotion: str = "",
     highlight: str = "",
+    font_size_override: int | None = None,
+    highlight_color_override: tuple[int, int, int] | None = None,
 ) -> np.ndarray:
     """레퍼런스 채널 스타일 자막 이미지를 생성합니다.
 
-    - 80px ExtraBold, 두꺼운 검정 테두리 4px
+    - 70~90px ExtraBold (랜덤), 두꺼운 검정 테두리 4px
     - 배경 박스 없음 (텍스트만 선명하게)
-    - 핵심 단어별 색상 강조
+    - 핵심 단어별 색상 강조 (랜덤 강조색 지원)
     - 그림자 효과 (검정, 오프셋 3px, 블러)
 
     Args:
@@ -162,6 +167,8 @@ def create_subtitle_image(
         section: 현재 섹션 이름.
         emotion: 감정 태그.
         highlight: 강조할 핵심 단어.
+        font_size_override: 폰트 크기 오버라이드 (AI 탐지 회피).
+        highlight_color_override: 강조 색상 오버라이드 (AI 탐지 회피).
 
     Returns:
         RGBA numpy 배열.
@@ -179,8 +186,9 @@ def create_subtitle_image(
     # 줄바꿈 (최대 8글자/줄, 2줄)
     wrapped = _wrap_text(text)
 
-    # 80px ExtraBold 폰트
-    font = load_font(SUBTITLE_FONT_SIZE)
+    # 폰트 크기 (기본 80px, 랜덤 오버라이드 가능)
+    effective_font_size = font_size_override if font_size_override else SUBTITLE_FONT_SIZE
+    font = load_font(effective_font_size)
     ow = OUTLINE_WIDTH  # 4px 테두리
 
     # 텍스트 크기 측정
@@ -233,7 +241,7 @@ def create_subtitle_image(
             word_w = word_bbox[2] - word_bbox[0]
 
             # 단어 색상 결정
-            word_color = _get_word_color(word, keywords, highlight)
+            word_color = _get_word_color(word, keywords, highlight, highlight_color_override)
 
             # 그림자 (검정, 오프셋 3px)
             shadow_draw.text(
@@ -271,13 +279,19 @@ def create_subtitle_image(
     return np.array(result)
 
 
-def create_title_bar(title: str) -> np.ndarray:
+def create_title_bar(
+    title: str,
+    font_size_override: int | None = None,
+    opacity_override: float | None = None,
+) -> np.ndarray:
     """상단 고정 타이틀 바를 생성합니다.
 
     반투명 검은색 배경에 쇼츠 제목을 표시합니다.
 
     Args:
         title: 표시할 제목.
+        font_size_override: 폰트 크기 오버라이드 (AI 탐지 회피).
+        opacity_override: 투명도 오버라이드 0.0~1.0 (AI 탐지 회피).
 
     Returns:
         RGBA numpy 배열.
@@ -286,25 +300,28 @@ def create_title_bar(title: str) -> np.ndarray:
     video_width = settings.video_width
     bar_height = 100  # 약간 줄임 (120 → 100)
 
+    # 투명도 랜덤화 (기본 0.7)
+    bar_opacity = opacity_override if opacity_override is not None else 0.7
+
     img = Image.new("RGBA", (video_width, bar_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # 반투명 배경 (rgba 0,0,0,0.7)
+    # 반투명 배경
     draw.rectangle(
         [(0, 0), (video_width, bar_height)],
-        fill=TITLE_BAR_COLOR + (int(255 * 0.7),),
+        fill=TITLE_BAR_COLOR + (int(255 * bar_opacity),),
     )
 
     # 하단 페이드아웃
     for i in range(15):
-        alpha = int(255 * 0.7) - int(255 * 0.7 * i / 15)
+        alpha = int(255 * bar_opacity) - int(255 * bar_opacity * i / 15)
         draw.rectangle(
             [(0, bar_height - 15 + i), (video_width, bar_height - 14 + i)],
             fill=TITLE_BAR_COLOR + (max(0, alpha),),
         )
 
-    # 제목 텍스트 (자막보다 20% 작게 = 약 64px)
-    title_font_size = int(SUBTITLE_FONT_SIZE * 0.8)
+    # 제목 텍스트 (폰트 크기 랜덤화 가능)
+    title_font_size = font_size_override if font_size_override else int(SUBTITLE_FONT_SIZE * 0.8)
     font = load_font(title_font_size)
     display = title[:25]
 

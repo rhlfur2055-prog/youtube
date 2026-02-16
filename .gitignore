@@ -44,11 +44,16 @@ Thumbs.db
 test_*.py
 test_*.txt
 *_test.py
+_test_*.py
+_topic_test.txt
 inspect_*.py
 analyze_*.py
 find_*.py
 output/*.mp4
 output/screenshots/
+render_log.txt
+run_test.py
+data/community_cache/
 
 nul
 .claude/worktrees/

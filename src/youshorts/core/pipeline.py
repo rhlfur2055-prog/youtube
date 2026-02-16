@@ -55,6 +55,7 @@ class Pipeline:
         label: str = "",
         quality_ai: bool = False,
         source_url: str = "",
+        source_text: str = "",
         no_pexels: bool = False,
         renderer: str | None = None,
         settings: Settings | None = None,
@@ -70,6 +71,7 @@ class Pipeline:
             label: 표시 라벨 (A/B 테스트용).
             quality_ai: AI 심층 품질 분석 활성화 여부.
             source_url: 크롤링할 커뮤니티 게시글 URL.
+            source_text: 커뮤니티 크롤러에서 가져온 원본 텍스트.
             no_pexels: Pexels 비활성화 (그라데이션 배경 사용).
             renderer: 렌더러 선택 ("shotstack" | "moviepy" | None=auto).
             settings: 설정 인스턴스.
@@ -86,6 +88,7 @@ class Pipeline:
         self.label = label
         self.quality_ai = quality_ai
         self.source_url = source_url
+        self.source_text = source_text  # 커뮤니티 크롤러 원본
         self.no_pexels = no_pexels
         self.renderer = renderer  # 렌더러 선택 (shotstack / moviepy / None=auto)
         self.settings = settings or get_settings()
@@ -197,10 +200,13 @@ class Pipeline:
         self._step(step, total, "대본 생성 중")
         from youshorts.core.script_generator import generate_script
 
+        # source_text: source_url 크롤링 결과 또는 community_crawler 결과
+        effective_source_text = self.result.source_text or self.source_text
+
         self.result.script = generate_script(
             self.topic,
             style=self.style,
-            source_text=self.result.source_text,
+            source_text=effective_source_text,
             settings=self.settings,
         )
 
