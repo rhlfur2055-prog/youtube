@@ -49,7 +49,8 @@ _topic_test.txt
 inspect_*.py
 analyze_*.py
 find_*.py
-output/*.mp4
+output/
+!output/.gitkeep
 output/screenshots/
 render_log.txt
 run_test.py
