@@ -316,11 +316,11 @@ class TrendCollector:
 
         return ""
 
-    # ── 통합: 3개 소스 병합 + 중복 제거 + 정렬 ──
+    # ── 통합: 3+ 소스 병합 + 중복 제거 + 정렬 ──
     def collect_all(self) -> list[dict]:
-        """3개 소스 합산, 같은 키워드 점수 합산"""
+        """기본 3개 소스 + APIFY(토큰 있으면) 합산"""
         print("\n" + "=" * 60)
-        print("STEP 1: 트렌드 수집 (3개 소스)")
+        print("STEP 1: 트렌드 수집")
         print("=" * 60)
 
         all_trends = []
@@ -328,25 +328,39 @@ class TrendCollector:
         all_trends.extend(self.fetch_naver_signal())
         all_trends.extend(self.fetch_community_hot())
 
-        # 중복 키워드 합산
+        # APIFY 크롤러 (토큰 있으면 자동 추가)
+        apify_results = ApifyCrawler.crawl()
+        if apify_results:
+            all_trends.extend(apify_results)
+            print(f"  [OK] APIFY: {len(apify_results)}개 추가")
+
+        # 중복 키워드 합산 (URL/body 보존)
         merged = {}
         for t in all_trends:
             kw = t["keyword"]
             if kw in merged:
                 merged[kw]["score"] += t["score"]
                 merged[kw]["sources"].append(t["source"])
+                # URL/body가 있으면 보존
+                if t.get("url") and not merged[kw].get("url"):
+                    merged[kw]["url"] = t["url"]
+                if t.get("body") and not merged[kw].get("body"):
+                    merged[kw]["body"] = t["body"]
             else:
                 merged[kw] = {
                     "keyword": kw,
                     "score": t["score"],
                     "sources": [t["source"]],
+                    "url": t.get("url", ""),
+                    "body": t.get("body", ""),
                 }
 
         sorted_trends = sorted(
             merged.values(), key=lambda x: x["score"], reverse=True
         )
 
-        print(f"\n  총 {len(sorted_trends)}개 트렌드 수집 완료")
+        src_count = 3 + (1 if apify_results else 0)
+        print(f"\n  총 {len(sorted_trends)}개 트렌드 수집 완료 ({src_count}개 소스)")
         for i, t in enumerate(sorted_trends[:5]):
             sources = ", ".join(t["sources"])
             print(f"  {i + 1}. [{t['score']:,}점] {t['keyword']} ({sources})")
@@ -698,11 +712,14 @@ class ScriptGenerator:
 # ============================================================================
 class TTSEngine:
     """
-    edge-tts 핵심: communicate().stream()의 WordBoundary 이벤트에서
-    각 단어의 시작시간/지속시간을 수집 -> 자막 싱크에 사용
+    3단계 TTS 폴백: edge-tts → ElevenLabs → OpenAI TTS
+    - edge-tts: 무료, WordBoundary 타이밍 지원
+    - ElevenLabs: 고품질 (ELEVENLABS_API_KEY 필요)
+    - OpenAI TTS: 안정적 (OPENAI_API_KEY 필요)
     """
 
-    async def generate_with_timing(
+    # ── 1단계: edge-tts (기본) ──
+    async def _edge_tts(
         self, text: str, output_mp3: str
     ) -> list[dict]:
         """edge-tts로 음성 생성 + 단어별 타이밍 수집"""
@@ -729,22 +746,117 @@ class TTSEngine:
                         "end_ms": (chunk["offset"] + chunk["duration"]) // 10000,
                     })
 
-        print(f"  [OK] TTS 생성: {output_mp3}")
-        print(f"  단어 타이밍: {len(word_timings)}개 단어 수집")
-
-        if word_timings:
-            total_ms = word_timings[-1]["end_ms"]
-            print(f"  총 길이: {total_ms / 1000:.1f}초")
-
-            if total_ms > Config.MAX_DURATION * 1000:
-                print(f"  [WARN] {Config.MAX_DURATION}초 초과!")
-
         return word_timings
+
+    # ── 2단계: ElevenLabs (고품질 폴백) ──
+    def _elevenlabs_tts(self, text: str, output_mp3: str) -> list[dict]:
+        """ElevenLabs TTS — 고품질 한국어 음성"""
+        import requests
+
+        api_key = os.getenv("ELEVENLABS_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("ELEVENLABS_API_KEY 미설정")
+
+        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel
+
+        resp = requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            headers={
+                "xi-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.8,
+                },
+            },
+            timeout=60,
+        )
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"ElevenLabs HTTP {resp.status_code}: {resp.text[:200]}")
+
+        with open(output_mp3, "wb") as f:
+            f.write(resp.content)
+
+        print(f"  [OK] ElevenLabs TTS 생성: {len(resp.content) // 1024}KB")
+        return []  # ElevenLabs는 WordBoundary 없음 → 청크 기반 자막
+
+    # ── 3단계: OpenAI TTS (최후 폴백) ──
+    def _openai_tts(self, text: str, output_mp3: str) -> list[dict]:
+        """OpenAI TTS API — tts-1 또는 tts-1-hd"""
+        import requests
+
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY 미설정")
+
+        resp = requests.post(
+            "https://api.openai.com/v1/audio/speech",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "tts-1",
+                "input": text,
+                "voice": "nova",  # 밝고 경쾌한 목소리
+                "response_format": "mp3",
+                "speed": 1.1,
+            },
+            timeout=60,
+        )
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"OpenAI TTS HTTP {resp.status_code}: {resp.text[:200]}")
+
+        with open(output_mp3, "wb") as f:
+            f.write(resp.content)
+
+        print(f"  [OK] OpenAI TTS 생성: {len(resp.content) // 1024}KB")
+        return []  # OpenAI도 WordBoundary 없음
+
+    # ── 메인: 3단계 폴백 ──
+    async def generate_with_timing(
+        self, text: str, output_mp3: str
+    ) -> list[dict]:
+        """edge-tts → ElevenLabs → OpenAI 3단계 폴백"""
+
+        # 1단계: edge-tts
+        try:
+            word_timings = await self._edge_tts(text, output_mp3)
+            if os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 1000:
+                print(f"  [OK] edge-tts 성공: {len(word_timings)}개 타이밍")
+                return word_timings
+            print("  [WARN] edge-tts: 파일 비정상")
+        except Exception as e:
+            print(f"  [WARN] edge-tts 실패: {e}")
+
+        # 2단계: ElevenLabs
+        try:
+            word_timings = self._elevenlabs_tts(text, output_mp3)
+            if os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 1000:
+                return word_timings
+        except Exception as e:
+            print(f"  [WARN] ElevenLabs 실패: {e}")
+
+        # 3단계: OpenAI TTS
+        try:
+            word_timings = self._openai_tts(text, output_mp3)
+            if os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 1000:
+                return word_timings
+        except Exception as e:
+            print(f"  [WARN] OpenAI TTS 실패: {e}")
+
+        raise RuntimeError("TTS 3단계 폴백 모두 실패")
 
     def generate(self, text: str, output_mp3: str) -> list[dict]:
         """동기 래퍼"""
         print("\n" + "=" * 60)
-        print("STEP 3: TTS 생성 (edge-tts + 단어별 타이밍)")
+        print("STEP 3: TTS 생성 (edge→ElevenLabs→OpenAI 폴백)")
         print("=" * 60)
 
         return asyncio.run(
@@ -1357,7 +1469,336 @@ def make_one_perfect_short():
 
 
 # ============================================================================
-# 실행
+# STEP 7: YouTube 업로드 (OAuth2)
+# ============================================================================
+class YouTubeUploader:
+    """YouTube Shorts 업로더 — OAuth2 인증 + 3회 재시도"""
+
+    SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+    MAX_RETRIES = 3
+
+    def __init__(self):
+        self.client_id = os.getenv("YOUTUBE_CLIENT_ID", "")
+        self.client_secret = os.getenv("YOUTUBE_CLIENT_SECRET", "")
+        self.token_path = str(Config.BASE_DIR / "data" / "youtube_token.json")
+        self.service = None
+
+    def authenticate(self) -> bool:
+        """OAuth2 인증 (저장 토큰 -> 리프레시 -> 브라우저 플로우)"""
+        if not self.client_id or not self.client_secret:
+            print("  [WARN] YOUTUBE_CLIENT_ID/SECRET 미설정 -> 업로드 불가")
+            return False
+
+        try:
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build
+
+            creds = None
+
+            if os.path.exists(self.token_path):
+                creds = Credentials.from_authorized_user_file(
+                    self.token_path, self.SCOPES
+                )
+
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except Exception:
+                    creds = None
+
+            if not creds or not creds.valid:
+                flow = InstalledAppFlow.from_client_config(
+                    {"installed": {
+                        "client_id": self.client_id,
+                        "client_secret": self.client_secret,
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                        "redirect_uris": ["http://localhost"],
+                    }},
+                    self.SCOPES,
+                )
+                creds = flow.run_local_server(port=0)
+                os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
+                with open(self.token_path, "w") as f:
+                    f.write(creds.to_json())
+
+            self.service = build("youtube", "v3", credentials=creds)
+            return True
+
+        except ImportError:
+            print("  [WARN] google-auth-oauthlib 미설치 -> pip install google-auth-oauthlib google-api-python-client")
+            return False
+        except Exception as e:
+            print(f"  [ERROR] YouTube 인증 실패: {e}")
+            return False
+
+    def upload(self, mp4_path: str, metadata: dict, privacy: str = "public") -> Optional[str]:
+        """영상 업로드 (3회 재시도, resumable)"""
+        if not self.service and not self.authenticate():
+            return None
+
+        title = metadata.get("title", "쇼츠")[:46]
+        if "#Shorts" not in title:
+            title = f"{title} #Shorts"
+
+        description = metadata.get("description", "")
+        if not description:
+            description = f"{title}\n\n이 영상은 AI 도구를 활용하여 제작되었습니다."
+        tags = metadata.get("tags", [])[:20]
+
+        body = {
+            "snippet": {
+                "title": title,
+                "description": description,
+                "tags": tags,
+                "categoryId": "22",
+                "defaultLanguage": "ko",
+            },
+            "status": {
+                "privacyStatus": privacy,
+                "selfDeclaredMadeForKids": False,
+            },
+        }
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                from googleapiclient.http import MediaFileUpload
+
+                media = MediaFileUpload(
+                    mp4_path, mimetype="video/mp4", resumable=True,
+                    chunksize=10 * 1024 * 1024,
+                )
+                request = self.service.videos().insert(
+                    part="snippet,status", body=body, media_body=media,
+                )
+
+                print(f"  업로드 시작: '{title}'")
+                response = None
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        print(f"  업로드: {int(status.progress() * 100)}%")
+
+                video_id = response["id"]
+                url = f"https://youtube.com/shorts/{video_id}"
+                print(f"  [OK] 업로드 완료: {url}")
+                return url
+
+            except Exception as e:
+                print(f"  [WARN] 업로드 실패 ({attempt}/{self.MAX_RETRIES}): {e}")
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(10)
+
+        return None
+
+
+# ============================================================================
+# 파일 정리 유틸
+# ============================================================================
+class FileCleaner:
+    """비정상 MP4 + 임시 파일 자동 정리"""
+
+    MIN_MP4_SIZE = 5 * 1024 * 1024  # 5MB 이하 = 비정상
+
+    @staticmethod
+    def clean_output(output_dir: str = None):
+        """output/ 폴더에서 비정상 파일 정리"""
+        if output_dir is None:
+            output_dir = str(Config.OUTPUT_DIR)
+
+        cleaned = 0
+        for root, dirs, files in os.walk(output_dir):
+            for f in files:
+                fp = os.path.join(root, f)
+                if f.endswith(".mp4") and os.path.getsize(fp) < FileCleaner.MIN_MP4_SIZE:
+                    os.remove(fp)
+                    cleaned += 1
+                    print(f"  삭제 (비정상): {f}")
+
+        # temp 폴더 정리
+        temp_dir = os.path.join(str(Config.BASE_DIR), "temp")
+        if os.path.exists(temp_dir):
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        # __pycache__ 정리
+        for root, dirs, files in os.walk(str(Config.BASE_DIR)):
+            for d in dirs:
+                if d == "__pycache__":
+                    import shutil
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+
+        if cleaned:
+            print(f"  [OK] {cleaned}개 비정상 파일 정리")
+
+
+# ============================================================================
+# APIFY 크롤링 강화
+# ============================================================================
+class ApifyCrawler:
+    """APIFY cheerio-scraper로 커뮤니티 5사이트 크롤링"""
+
+    SITES = [
+        ("에펨코리아", "https://www.fmkorea.com/index.php?mid=humor_best"),
+        ("인스티즈", "https://www.instiz.net/pt"),
+        ("더쿠", "https://theqoo.net/hot"),
+        ("클리앙", "https://www.clien.net/service/board/park"),
+        ("루리웹", "https://bbs.ruliweb.com/community/board/300143/best"),
+    ]
+
+    @staticmethod
+    def crawl() -> list[dict]:
+        """APIFY로 크롤링 (토큰 있을 때만)"""
+        import requests
+
+        token = os.getenv("APIFY_TOKEN", "")
+        if not token:
+            return []
+
+        results = []
+        for name, url in ApifyCrawler.SITES:
+            try:
+                resp = requests.post(
+                    f"https://api.apify.com/v2/acts/apify~cheerio-scraper/runs?token={token}",
+                    json={
+                        "startUrls": [{"url": url}],
+                        "maxRequestsPerCrawl": 20,
+                        "pageFunction": """async function pageFunction(context) {
+                            const $ = context.jQuery;
+                            const results = [];
+                            $('a').each((i, el) => {
+                                const title = $(el).text().trim();
+                                const href = $(el).attr('href') || '';
+                                if (title.length > 10 && title.length < 80) {
+                                    results.push({ title, url: href });
+                                }
+                            });
+                            return results.slice(0, 10);
+                        }""",
+                    },
+                    timeout=30,
+                )
+
+                if resp.status_code == 201:
+                    run_id = resp.json().get("data", {}).get("id", "")
+                    # 결과 대기 (최대 30초)
+                    for _ in range(6):
+                        time.sleep(5)
+                        status_resp = requests.get(
+                            f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={token}",
+                            timeout=10,
+                        )
+                        if status_resp.status_code == 200:
+                            items = status_resp.json()
+                            for i, item in enumerate(items[:10]):
+                                if isinstance(item, dict) and "title" in item:
+                                    results.append({
+                                        "keyword": item["title"],
+                                        "source": f"apify_{name}",
+                                        "score": (10 - i) * 4000,
+                                    })
+                            break
+
+                print(f"  [OK] APIFY {name}: {len([r for r in results if name in r.get('source', '')])}개")
+
+            except Exception as e:
+                print(f"  [WARN] APIFY {name} 실패: {e}")
+
+        return results
+
+
+# ============================================================================
+# 대량 생산 + CLI
+# ============================================================================
+def mass_produce(count: int = 1, upload: bool = False, clean: bool = True):
+    """
+    영상 N개 대량 생산
+    사용법: python perfect_one_shot.py --count 3 --upload
+    """
+    print("\n" + "=" * 60)
+    print(f"  대량 생산 시작: {count}개, 업로드: {'ON' if upload else 'OFF'}")
+    print("=" * 60)
+
+    uploader = YouTubeUploader() if upload else None
+    results = []
+    success = 0
+    fail = 0
+
+    for i in range(count):
+        print(f"\n{'='*60}")
+        print(f"  [{i+1}/{count}] 영상 생성 시작")
+        print(f"{'='*60}")
+
+        try:
+            result = make_one_perfect_short()
+            results.append(result)
+            success += 1
+
+            # YouTube 업로드
+            if uploader:
+                print("\n" + "=" * 60)
+                print("STEP 7: YouTube 업로드")
+                print("=" * 60)
+                url = uploader.upload(
+                    result["video"],
+                    {
+                        "title": result["title"],
+                        "description": result["description"],
+                        "tags": result["tags"],
+                    },
+                )
+                if url:
+                    result["youtube_url"] = url
+
+            # 연속 생산 시 대기 (API 부하 방지)
+            if i < count - 1:
+                wait = 30
+                print(f"\n  {wait}초 대기 후 다음 영상...")
+                time.sleep(wait)
+
+        except Exception as e:
+            print(f"\n  [ERROR] 영상 생성 실패: {e}")
+            fail += 1
+
+    # 파일 정리
+    if clean:
+        print("\n" + "=" * 60)
+        print("파일 정리")
+        print("=" * 60)
+        FileCleaner.clean_output()
+
+    # 최종 요약
+    print("\n" + "=" * 60)
+    print(f"  대량 생산 완료!")
+    print(f"  성공: {success}개, 실패: {fail}개")
+    print(f"  성공률: {success/(success+fail)*100:.0f}%" if (success+fail) > 0 else "")
+    for r in results:
+        yt = r.get("youtube_url", "")
+        print(f"  - {r['title']} ({r.get('quality_score', '?')}점) {yt}")
+    print("=" * 60)
+
+    return results
+
+
+# ============================================================================
+# 실행 (CLI)
 # ============================================================================
 if __name__ == "__main__":
-    result = make_one_perfect_short()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="youshorts 영상 생성기")
+    parser.add_argument("--count", type=int, default=1, help="생성할 영상 수 (기본: 1)")
+    parser.add_argument("--upload", action="store_true", help="YouTube 자동 업로드")
+    parser.add_argument("--no-clean", action="store_true", help="파일 정리 스킵")
+    args = parser.parse_args()
+
+    if args.count == 1 and not args.upload:
+        result = make_one_perfect_short()
+    else:
+        mass_produce(
+            count=args.count,
+            upload=args.upload,
+            clean=not args.no_clean,
+        )
