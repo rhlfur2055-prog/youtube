@@ -203,60 +203,21 @@ class CommunityCrawler:
     # ──────────────────────────────────────
 
     def _calc_shorts_score(self, post: dict[str, Any]) -> int:
-        """쇼츠 적합성 점수를 산출합니다 (높을수록 좋음)."""
+        """쇼츠 적합성 점수를 산출합니다 (높을수록 좋음).
+
+        점수 기준:
+        - 음식/배달/알바/진상: +8점
+        - 레전드/역대급/논란/충격/결말/ㄷㄷ/ㅋㅋ: +5점
+        - 구체적 숫자: +4점
+        - 정치/고양이/강아지/투표/설문: -100점
+        최소 10점 이상만 통과
+        """
         score = 0
         title = post.get("title", "")
         body = post.get("body", "")
         text = title + " " + body
 
-        # ── 대박 키워드 (조회수 직결) ──
-        viral_keywords = [
-            '레전드', '역대급', '논란', '충격', '결말', '대박',
-            '소름', '미친', '실화', '참교육', '복수', '폭로',
-            'ㄷㄷ', 'ㅋㅋ', 'ㄹㅇ', '빌런', '진상', '줄퇴사',
-            '황당', '역관광', 'CCTV', '현실'
-        ]
-        for kw in viral_keywords:
-            if kw in text:
-                score += 5
-
-        # ── 음식/배달/알바 카테고리 (핵심 장르) ──
-        food_keywords = [
-            '배달', '치킨', '피자', '짜장면', '초밥', '마라탕',
-            '편의점', '알바', '카페', '식당', '횟집', '고깃집',
-            '서브웨이', 'PC방', '정육점', '빵집', '떡볶이',
-            '중국집', '손님', '사장', '주문', '리뷰', '별점'
-        ]
-        food_count = sum(1 for kw in food_keywords if kw in text)
-        if food_count >= 1:
-            score += 8
-        if food_count >= 2:
-            score += 5
-
-        # ── 구체적 숫자 포함 (100만뷰 공식) ──
-        import re
-        numbers = re.findall(r'\d+', title)
-        if numbers:
-            score += 4  # 숫자 있으면 +4
-            for num in numbers:
-                if int(num) >= 100:
-                    score += 3  # 큰 숫자면 추가 +3
-
-        # ── 갈등/스토리 구조 ──
-        conflict_keywords = [
-            '이유', '결말', '때문에', '알고보니', '반전',
-            '그런데', '근데', '했더니', '시켰는데', '줬더니',
-            '몰래', '거절', '거부', '요구', '항의', '신고'
-        ]
-        for kw in conflict_keywords:
-            if kw in text:
-                score += 3
-
-        # ── 제목 길이 적합성 ──
-        if 15 <= len(title) <= 35:
-            score += 3  # 최적 길이
-
-        # ━━ 절대 금지 (-100점) ━━
+        # ━━ 절대 금지 (-100점) - 먼저 체크 ━━
         banned = [
             '정치', '선거', '대통령', '여당', '야당', '국회',
             '페미', '일베', '한남', '한녀',
@@ -267,6 +228,32 @@ class CommunityCrawler:
         for kw in banned:
             if kw in text:
                 return -100
+
+        # ── 음식/배달/알바/진상 (+8점) ──
+        food_keywords = [
+            '배달', '치킨', '피자', '짜장면', '초밥', '마라탕',
+            '편의점', '알바', '카페', '식당', '횟집', '고깃집',
+            '서브웨이', 'PC방', '정육점', '빵집', '떡볶이',
+            '중국집', '손님', '사장', '주문', '리뷰', '별점',
+            '진상', '서비스'
+        ]
+        if any(kw in text for kw in food_keywords):
+            score += 8
+
+        # ── 바이럴 키워드 (+5점) ──
+        viral_keywords = [
+            '레전드', '역대급', '논란', '충격', '결말',
+            'ㄷㄷ', 'ㅋㅋ', '소름', '대박', '실화',
+            '미친', '참교육', '복수', '폭로', 'ㄹㅇ'
+        ]
+        if any(kw in text for kw in viral_keywords):
+            score += 5
+
+        # ── 구체적 숫자 (+4점) ──
+        import re
+        numbers = re.findall(r'\d+', title)
+        if numbers:
+            score += 4
 
         return score
 
