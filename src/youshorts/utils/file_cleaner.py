@@ -21,7 +21,7 @@ from youshorts.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # 비정상 판별 기준
-MIN_VALID_MP4_SIZE = 30 * 1024 * 1024  # 30MB 미만은 비정상
+MIN_VALID_MP4_SIZE = 5 * 1024 * 1024  # 5MB 미만만 비정상 (30초 영상도 10~25MB)
 MIN_VALID_DURATION = 30.0  # 30초 미만은 비정상
 MIN_VALID_TTS_SIZE = 1024  # 1KB 미만 TTS는 비정상
 MAX_STALE_WORK_HOURS = 24  # 24시간 이상된 _work_* 삭제

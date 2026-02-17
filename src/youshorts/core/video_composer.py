@@ -898,7 +898,7 @@ def _randomize_video_params() -> dict[str, Any]:
         "font_size": random.randint(28, 32),
         "margin_v": random.randint(20, 30),
         "subtitle_font_size": random.randint(28, 32),
-        "subtitle_y_ratio": round(random.uniform(0.85, 0.90), 2),
+        "subtitle_y_ratio": round(random.uniform(0.78, 0.85), 2),
         "highlight_color": random.choice(highlight_colors),
         # 배경 어둡기
         "bg_darken": round(random.uniform(0.18, 0.35), 2),

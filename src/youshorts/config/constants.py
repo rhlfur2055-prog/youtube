@@ -7,21 +7,21 @@
 from __future__ import annotations
 
 # ── Font ──
-FONT_SIZE_MAX: int = 90
-FONT_SIZE_MIN: int = 60
-# 변경 사유: 레퍼런스 채널(김준표/똘킹/군림보) 스타일 - 화면 너비 7~8% = 약 80px
-SUBTITLE_FONT_SIZE: int = 80
-# 변경 사유: 한 번에 표시 글자 수 최대 8~10자 (2줄 이내, 가독성 극대화)
-MAX_CHARS_PER_LINE: int = 8
+FONT_SIZE_MAX: int = 38
+FONT_SIZE_MIN: int = 28
+# 변경 사유: 레퍼런스 채널급 자막 - 화면 3% 크기 (32px)
+SUBTITLE_FONT_SIZE: int = 32
+# 변경 사유: 한 줄에 더 많이 표시 (16자), 화면 덜 가림
+MAX_CHARS_PER_LINE: int = 16
 MAX_LINES: int = 2
 WORDS_PER_GROUP: int = 2
 
 # ── Subtitle ──
-SUBTITLE_MARGIN: int = 80
-# 변경 사유: 레퍼런스 채널 스타일 - 두꺼운 검정 테두리 4px
-OUTLINE_WIDTH: int = 4
-# 변경 사유: 자막 위치 - 화면 세로 35~55% 영역 (정중앙~약간 위)
-SUBTITLE_Y_RATIO: float = 0.45
+SUBTITLE_MARGIN: int = 30
+# 변경 사유: 깔끔한 테두리 2px
+OUTLINE_WIDTH: int = 2
+# 변경 사유: 자막 위치 - 화면 하단 18% 영역 (82% 지점)
+SUBTITLE_Y_RATIO: float = 0.82
 SUBTITLE_BG_OPACITY: int = 0
 SUBTITLE_BG_PADDING: int = 20
 SUBTITLE_BG_RADIUS: int = 0

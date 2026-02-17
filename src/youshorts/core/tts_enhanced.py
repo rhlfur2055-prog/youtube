@@ -1,10 +1,10 @@
-"""향상된 TTS 엔진 (ElevenLabs 우선 + edge-tts 폴백).
+"""향상된 TTS 엔진 (edge-tts 무료 우선 + ElevenLabs/OpenAI 폴백).
 
-변경 사유: ElevenLabs v2 API 전면 재작성
-- 전체 텍스트를 한 번에 ElevenLabs API로 전송 (문장 분할/결합 제거)
-- eleven_multilingual_v2 모델, stability=0.5, similarity_boost=0.8
-- OpenAI TTS 완전 제거 (API 키 없음)
-- edge-tts 폴백 (3회 재시도, 지수 백오프)
+변경 사유: 비용 절감 - edge-tts 무료 1순위 전환
+- edge-tts 무료 (1순위, 품질 충분)
+- ElevenLabs 유료 폴백 (2순위)
+- OpenAI TTS 유료 폴백 (3순위)
+- 전체 텍스트를 한 번에 전송 (문장 분할/결합 제거)
 - pydub ffmpeg 경로 자동 설정
 - 2-pass loudnorm 마스터링
 """
@@ -614,10 +614,28 @@ def generate_fitted_tts(
 
     for attempt in range(1, max_retries + 1):
         try:
-            # 3단계 폴백 체인: ElevenLabs → OpenAI TTS → edge-tts
+            # 3단계 폴백 체인: edge-tts(무료) → ElevenLabs → OpenAI TTS
             tts_generated = False
 
-            # 1순위: ElevenLabs (전체 텍스트 한 번에)
+            # 1순위: edge-tts (무료, 품질 충분)
+            if not tts_generated:
+                try:
+                    _generate_edge_tts_full_text(
+                        text=tts_text,
+                        output_path=audio_path,
+                        voice=settings.tts_voice,
+                        rate=settings.tts_rate,
+                        pitch=settings.tts_pitch,
+                    )
+                    logger.info("edge-tts 사용 (무료, 1순위)")
+                    tts_generated = True
+                except Exception as edge_err:
+                    logger.warning(
+                        "edge-tts 실패 (시도 %d): %s - ElevenLabs 폴백 시도",
+                        attempt, edge_err,
+                    )
+
+            # 2순위: ElevenLabs (유료 폴백)
             elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
             if elevenlabs_key and not tts_generated:
                 try:
@@ -628,7 +646,7 @@ def generate_fitted_tts(
                         stability=0.5,
                         similarity_boost=0.8,
                     )
-                    logger.info("ElevenLabs TTS 사용 (전체 텍스트 단일 요청)")
+                    logger.info("ElevenLabs TTS 폴백 사용")
                     tts_generated = True
                 except Exception as el_err:
                     logger.warning(
@@ -636,7 +654,7 @@ def generate_fitted_tts(
                         attempt, el_err,
                     )
 
-            # 2순위: OpenAI TTS (tts-1-hd, 폴백)
+            # 3순위: OpenAI TTS (최종 폴백)
             openai_key = os.getenv("OPENAI_API_KEY", "")
             if openai_key and not tts_generated:
                 try:
@@ -646,24 +664,17 @@ def generate_fitted_tts(
                         voice=getattr(settings, "openai_tts_voice", "onyx"),
                         model=getattr(settings, "openai_tts_model", "tts-1-hd"),
                     )
-                    logger.info("OpenAI TTS 폴백 사용 (tts-1-hd)")
+                    logger.info("OpenAI TTS 최종 폴백 사용")
                     tts_generated = True
                 except Exception as oai_err:
                     logger.warning(
-                        "OpenAI TTS 실패 (시도 %d): %s - edge-tts 최종 폴백",
+                        "OpenAI TTS 실패 (시도 %d): %s",
                         attempt, oai_err,
                     )
 
-            # 3순위: edge-tts (최종 폴백, 무료)
+            # 전부 실패하면 에러
             if not tts_generated:
-                _generate_edge_tts_full_text(
-                    text=tts_text,
-                    output_path=audio_path,
-                    voice=settings.tts_voice,
-                    rate=settings.tts_rate,
-                    pitch=settings.tts_pitch,
-                )
-                logger.info("edge-tts 최종 폴백 사용 (전체 텍스트)")
+                raise RuntimeError("모든 TTS 엔진 실패")
 
             # 무결성 검증
             if not os.path.exists(audio_path):
