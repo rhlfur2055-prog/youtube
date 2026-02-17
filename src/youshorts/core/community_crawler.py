@@ -181,8 +181,8 @@ class CommunityCrawler:
         # 이미 사용한 제목 제외
         filtered = [p for p in scored if p["title"] not in self.used_titles]
 
-        # 점수 10점 이상만 사용
-        high_quality = [p for p in filtered if p.get("score", 0) >= 10]
+        # 점수 15점 이상만 사용
+        high_quality = [p for p in filtered if p.get("score", 0) >= 15]
 
         if high_quality:
             selected = high_quality[:count]
