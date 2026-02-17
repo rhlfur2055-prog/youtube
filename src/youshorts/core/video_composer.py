@@ -99,16 +99,18 @@ def get_ffmpeg_path() -> str | None:
 def render_with_ffmpeg(
     bg_video: str,
     tts_audio: str,
-    subtitle_srt: str,
+    subtitle_file: str,
     output_path: str,
     config: dict[str, Any],
 ) -> str:
     """FFmpeg 직접 렌더링. MoviePy 대비 메모리 1/10.
 
+    ASS 자막(워드 하이라이트) 또는 SRT 자막 자동 감지.
+
     Args:
         bg_video: 배경 영상 경로.
         tts_audio: TTS 오디오 경로.
-        subtitle_srt: SRT 자막 파일 경로.
+        subtitle_file: ASS 또는 SRT 자막 파일 경로.
         output_path: 출력 파일 경로.
         config: 랜덤화 설정 (font_size, margin_v, bg_darken 등).
 
@@ -123,36 +125,45 @@ def render_with_ffmpeg(
     if not ffmpeg:
         raise FileNotFoundError("FFmpeg 미설치. pip install imageio-ffmpeg 또는 시스템 PATH에 추가하세요.")
 
-    # SRT 경로에 한글/공백 있으면 임시 복사
     ensure_dir(os.path.join(os.getcwd(), 'temp'))
-    safe_srt = os.path.join('temp', 'sub.srt')
-    shutil.copy2(subtitle_srt, safe_srt)
-    # Windows 경로 역슬래시 → 슬래시 (FFmpeg 호환)
-    safe_srt_escaped = safe_srt.replace('\\', '/').replace(':', '\\\\:')
-
-    font_size = config.get('font_size', 30)
-    margin_v = config.get('margin_v', 25)
     darken = config.get('bg_darken', 0.25)
-    brightness = round(-darken, 2)  # 0.25 → -0.25
+    brightness = round(-darken, 2)
 
-    # 레퍼런스 채널급 자막 스타일: 하단 15% 영역, 반투명 배경
-    subtitle_style = (
-        f"FontSize={font_size},"
-        f"PrimaryColour=&H00FFFFFF,"
-        f"OutlineColour=&H00000000,"
-        f"BackColour=&H80000000,"
-        f"BorderStyle=3,"
-        f"Outline=2,"
-        f"Shadow=1,"
-        f"Alignment=2,"
-        f"MarginV={margin_v}"
-    )
+    # ASS vs SRT 자동 감지
+    is_ass = subtitle_file.endswith('.ass')
+
+    if is_ass:
+        # ASS 자막: 스타일이 파일에 내장되어 있으므로 ass= 필터 사용
+        safe_sub = os.path.join('temp', 'sub.ass')
+        shutil.copy2(subtitle_file, safe_sub)
+        safe_sub_escaped = safe_sub.replace('\\', '/').replace(':', '\\\\:')
+        vf_filter = f"eq=brightness={brightness}:contrast=1.1,ass='{safe_sub_escaped}'"
+        logger.info("[렌더링] ASS 워드 하이라이트 자막 사용")
+    else:
+        # SRT 자막: force_style 사용 (기존 로직)
+        safe_sub = os.path.join('temp', 'sub.srt')
+        shutil.copy2(subtitle_file, safe_sub)
+        safe_sub_escaped = safe_sub.replace('\\', '/').replace(':', '\\\\:')
+        font_size = config.get('font_size', 30)
+        margin_v = config.get('margin_v', 25)
+        subtitle_style = (
+            f"FontSize={font_size},"
+            f"PrimaryColour=&H00FFFFFF,"
+            f"OutlineColour=&H00000000,"
+            f"BackColour=&H80000000,"
+            f"BorderStyle=3,"
+            f"Outline=2,"
+            f"Shadow=1,"
+            f"Alignment=2,"
+            f"MarginV={margin_v}"
+        )
+        vf_filter = f"eq=brightness={brightness}:contrast=1.1,subtitles='{safe_sub_escaped}':force_style='{subtitle_style}'"
 
     cmd = [
         ffmpeg, '-y',
         '-i', bg_video,
         '-i', tts_audio,
-        '-vf', f"eq=brightness={brightness}:contrast=1.1,subtitles='{safe_srt_escaped}':force_style='{subtitle_style}'",
+        '-vf', vf_filter,
         '-c:v', 'libx264',
         '-preset', 'fast',
         '-crf', '23',
@@ -166,9 +177,10 @@ def render_with_ffmpeg(
     ]
 
     logger.info("[렌더링] FFmpeg 시작: %s", output_path)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = subprocess.run(cmd, capture_output=True, timeout=600)
     if result.returncode != 0:
-        logger.error("[FFmpeg 에러] %s", result.stderr[-500:] if result.stderr else "")
+        stderr = result.stderr.decode("utf-8", errors="ignore") if isinstance(result.stderr, bytes) else (result.stderr or "")
+        logger.error("[FFmpeg 에러] %s", stderr[-500:])
         raise RuntimeError(f"FFmpeg 실패: returncode={result.returncode}")
     logger.info("[렌더링] FFmpeg 완료: %s", output_path)
     return output_path

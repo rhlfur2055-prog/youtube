@@ -579,9 +579,9 @@ class Pipeline:
         if not merged_bg or not os.path.exists(merged_bg):
             raise FileNotFoundError("배경 영상 없음 - MoviePy로 폴백")
 
-        # SRT 자막 생성
-        srt_path = os.path.join(self.settings.temp_dir, "subtitles.srt")
-        self._generate_srt(words, srt_path)
+        # ASS 워드 하이라이트 자막 생성 (words 타이밍 기반)
+        ass_path = os.path.join(self.settings.temp_dir, "subtitles.ass")
+        self._generate_ass_word_highlight([], words, ass_path)
 
         # 랜덤 파라미터
         config = _randomize_video_params()
@@ -591,12 +591,12 @@ class Pipeline:
         safe_title = re.sub(r'[^\w가-힣]', '_', self.result.script.get("title", "shorts"))[:30]
         output_path = os.path.join(self.settings.output_dir, f"shorts_{safe_title}_{timestamp}.mp4")
 
-        # FFmpeg 렌더링
+        # FFmpeg 렌더링 (ASS 자막 사용)
         from youshorts.core.video_composer import render_with_ffmpeg
         return render_with_ffmpeg(
             merged_bg,
             self.result.tts_path,
-            srt_path,
+            ass_path,
             output_path,
             config,
         )
@@ -629,6 +629,87 @@ class Pipeline:
                     f"{end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms_remainder:03d}\n"
                 )
                 f.write(f"{word_group['text']}\n\n")
+
+    def _generate_ass_word_highlight(
+        self, word_timings: list, words: list, output_path: str,
+    ) -> None:
+        """청크별 하이라이트 ASS 자막을 생성합니다.
+
+        현재 말하는 청크 = 노란색 볼드, 다음 줄 = 흰색 미리보기.
+        노래방 자막 스타일: 현재 읽는 부분만 노란색.
+
+        Args:
+            word_timings: 미사용 (호환성 유지).
+            words: 워드 그룹 타이밍 [{start, end, text}, ...].
+            output_path: ASS 출력 경로.
+        """
+        from youshorts.config.constants import (
+            SUBTITLE_FONT_SIZE,
+            SUBTITLE_Y_RATIO,
+        )
+
+        font_size = SUBTITLE_FONT_SIZE
+        margin_v = int(1920 * (1 - SUBTITLE_Y_RATIO))
+
+        header = (
+            "[Script Info]\n"
+            "ScriptType: v4.00+\n"
+            "PlayResX: 1080\n"
+            "PlayResY: 1920\n"
+            "WrapStyle: 0\n"
+            "\n"
+            "[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+            f"Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,"
+            f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,"
+            f"10,10,{margin_v},1\n"
+            "\n"
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
+            "MarginV, Effect, Text\n"
+        )
+
+        def _tc(seconds: float) -> str:
+            h = int(seconds // 3600)
+            m = int((seconds % 3600) // 60)
+            s = seconds % 60
+            return f"{h}:{m:02d}:{s:05.2f}"
+
+        if not words:
+            logger.warning("ASS 자막: 워드 그룹 없음")
+            return
+
+        with open(output_path, 'w', encoding='utf-8-sig') as f:
+            f.write(header)
+
+            for i, wg in enumerate(words):
+                start_tc = _tc(wg['start'])
+                end_tc = _tc(wg['end'])
+                current_text = wg['text'].replace('\n', ' ').strip()
+
+                # ASS 인라인 스타일: 현재 청크=노란 볼드, 다음=흰색
+                yellow = "{\\c&H0000FFFF&\\b1}"
+                white = "{\\c&H00FFFFFF&\\b0}"
+                reset = "{\\r}"
+
+                if i + 1 < len(words):
+                    next_text = words[i + 1]['text'].replace('\n', ' ').strip()
+                    combined = (
+                        f"{yellow}{current_text}{reset}\\N"
+                        f"{white}{next_text}{reset}"
+                    )
+                else:
+                    combined = f"{yellow}{current_text}{reset}"
+
+                f.write(
+                    f"Dialogue: 0,{start_tc},{end_tc},Default,,0,0,0,,"
+                    f"{combined}\n"
+                )
+
+        logger.info("ASS 하이라이트 자막: %d개 청크 (현재=노란, 다음=흰색)", len(words))
 
     def _render_with_shotstack(self, words: list) -> str:
         """Shotstack API로 영상을 렌더링합니다.

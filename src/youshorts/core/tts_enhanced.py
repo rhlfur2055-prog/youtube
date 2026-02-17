@@ -120,6 +120,14 @@ _usage_stats = {
     "cache_hits": 0,
 }
 
+# ── edge-tts 워드 타이밍 (WordBoundary) ──
+_edge_word_timings: list[dict] = []
+
+
+def get_edge_word_timings() -> list[dict]:
+    """가장 최근 edge-tts 생성의 워드 타이밍을 반환합니다."""
+    return _edge_word_timings.copy()
+
 
 def _get_cache_path(text: str, provider: str = "elevenlabs") -> Path:
     """텍스트+제공자 조합으로 캐시 키 생성."""
@@ -329,6 +337,8 @@ def _generate_edge_tts_full_text(
 ) -> str:
     """edge-tts로 전체 텍스트를 한 번에 TTS 생성합니다 (3회 재시도).
 
+    워드 타이밍(WordBoundary)을 캡처하여 _edge_word_timings에 저장합니다.
+
     Args:
         text: 변환할 전체 텍스트.
         output_path: 출력 파일 경로.
@@ -352,6 +362,7 @@ def _generate_edge_tts_full_text(
             communicate = edge_tts.Communicate(
                 text, voice=voice, rate=rate, pitch=pitch,
             )
+
             asyncio.run(communicate.save(output_path))
 
             global _usage_stats
