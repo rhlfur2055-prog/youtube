@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import gc
 import glob
 import os
 import random
@@ -144,7 +145,7 @@ def _apply_blur_to_clip(clip: VideoFileClip, radius: int = BG_BLUR_RADIUS) -> Vi
         frame = get_frame(t)
         img = Image.fromarray(frame)
         blurred = img.filter(ImageFilter.GaussianBlur(radius=radius))
-        return np.array(blurred)
+        return np.array(blurred, dtype=np.uint8)
     return clip.fl(blur_frame)
 
 
@@ -214,7 +215,7 @@ def _apply_ken_burns(
         y1 = max(0, min(y1, new_h - h))
         img = img.crop((x1, y1, x1 + w, y1 + h))
 
-        return np.array(img)
+        return np.array(img, dtype=np.uint8)
 
     return clip.fl(ken_burns_frame)
 
@@ -248,7 +249,7 @@ def _fit_image_to_vertical(
         img = img.crop((0, top, img.width, top + new_h))
 
     img = img.resize((video_width, video_height), Image.LANCZOS)
-    return np.array(img)
+    return np.array(img, dtype=np.uint8)
 
 
 def _prepare_screenshot_bg(
@@ -295,7 +296,7 @@ def _prepare_screenshot_bg(
     enhancer = ImageEnhance.Brightness(img)
     img = enhancer.enhance(brightness)
 
-    return np.array(img)
+    return np.array(img, dtype=np.uint8)
 
 
 def _generate_gradient_background(
@@ -407,7 +408,7 @@ def _generate_gradient_background(
 
                 pixels[x, y] = color  # type: ignore
 
-    return np.array(img)
+    return np.array(img, dtype=np.uint8)
 
 
 def _build_background(
