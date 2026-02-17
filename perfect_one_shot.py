@@ -83,8 +83,8 @@ class Config:
     SUBTITLE_MARGIN_V = 350
 
     # ── 품질 ──
-    MIN_QUALITY_SCORE = 85
-    MAX_RETRY = 3
+    MIN_QUALITY_SCORE = 80
+    MAX_RETRY = 5
 
     # ── AI 슬롭 금지어 ──
     AI_SLOP_WORDS = [
@@ -92,6 +92,10 @@ class Config:
         "알아보겠", "살펴보겠", "함께 알아", "그렇다면",
         "~인 셈이다", "~라 할 수 있", "결론적으로",
         "마무리하며", "정리하자면", "요약하자면",
+        "주목할 만한", "눈여겨볼", "한편으로는", "다른 한편으로는",
+        "주목해야", "깊이 있는", "의미 있는", "다양한 측면",
+        "시사하는 바", "귀추가 주목", "전문가들은", "관계자에 따르면",
+        "이목이 집중", "화제를 모으", "논란이 되고",
     ]
 
     # ── 생산 한도 ──
@@ -139,12 +143,12 @@ class Config:
         ],
     }
 
-    # 주제 키워드 → 그라디언트 색상 (어두운 톤 = 자막 가독성)
+    # 주제 키워드 → 그라디언트 색상 (상단→하단, 진한 톤 + 자막 가독성)
     GRADIENT_COLORS: dict[str, tuple[str, str]] = {
-        "food":    ("#1a0800", "#2d1000"),  # 따뜻한 오렌지 다크
-        "beauty":  ("#1a0020", "#200030"),  # 핑크→보라 다크
-        "info":    ("#000a1a", "#0a0020"),  # 다크블루→퍼플
-        "default": ("#0a0a0f", "#0f0f18"),  # 다크그레이→블랙
+        "food":    ("#8B2500", "#FF6B35"),  # 짙은 레드 → 오렌지
+        "beauty":  ("#4A0E4E", "#C850C0"),  # 딥퍼플 → 핫핑크
+        "info":    ("#0D1B2A", "#1B4965"),  # 네이비 → 틸블루
+        "default": ("#1A1A2E", "#16213E"),  # 다크네이비 → 미드나잇블루
     }
     GRADIENT_TOPIC_MAP: dict[str, list[str]] = {
         "food":   ["맛집", "편의점", "음식", "요리", "레시피", "먹방", "꿀조합", "카페", "맥도날드", "스타벅스"],
@@ -599,17 +603,37 @@ class ScriptGenerator:
     검증된 프롬프트 + 커뮤니티 본문 기반 + 품질 85점 이상
     """
 
-    PROMPT_TEMPLATE = """너는 에펨코리아 인기글을 읽어주는 유튜브 쇼츠 나레이터야.
+    # ── 원글 있을 때: 팩트 기반 나레이션 ──
+    PROMPT_WITH_SOURCE = """너는 유튜브 쇼츠 나레이터야. 20대 남성, 인터넷 커뮤니티 말투.
 
-규칙:
-1. 아래 [원글 내용]을 20대 남성 말투로 읽어주기만 해. 절대 새로 지어내지 마.
-2. 원글에 없는 내용 추가 금지. 팩트만 전달.
-3. 첫 문장: "야 이거 실화임" 또는 "아니 이게 말이 돼?" 중 하나로 시작
-4. 마지막 문장: "ㄹㅇ 레전드ㅋㅋ" 또는 "소름돋음ㄷㄷ" 중 하나로 끝
-5. 문장당 최대 15자. 짧게 끊어.
-6. "여러분", 사람이름, "경제학", "딜레마", **볼드**, "마무리하며" 전부 금지
-7. 원글 body의 핵심 사실을 80% 이상 포함해야 함
-8. 전체 대본 200~350자
+[원글 내용]을 기반으로 쇼츠 대본을 작성해.
+
+핵심 규칙:
+1. 원글 팩트를 80% 이상 포함. 없는 내용 지어내지 마.
+2. 문장당 8~15자로 짧게 끊어. 한 문장에 한 가지 팩트만.
+3. 총 18~25문장. 전체 250~350자.
+4. 말투: "~함", "~임", "~인듯", "~ㅋㅋ", "~ㄷㄷ" 등 자연스러운 반말.
+5. "여러분", 실명, **볼드**, 이모지 전부 금지.
+
+첫 문장 (아래 중 랜덤 택1):
+- "야 이거 실화임?"
+- "아니 이게 말이 돼?"
+- "ㅋㅋㅋ 미쳤다 진짜"
+- "와 이건 좀 소름인데"
+- "아 진짜 웃기네ㅋㅋ"
+- "역대급 나왔다 ㄷㄷ"
+- "이거 모르면 손해임"
+- "핵꿀팁 발견했다"
+
+마지막 문장 (아래 중 랜덤 택1):
+- "ㄹㅇ 레전드ㅋㅋ"
+- "소름돋음ㄷㄷ"
+- "진짜 미쳤다ㅋㅋㅋ"
+- "안 해본 사람 없게 해주세요"
+- "댓글로 알려줘 ㄱㄱ"
+- "구독 박고 가자"
+- "이거 저장 필수임"
+- "다음편 궁금하면 구독 ㄱ"
 
 절대 쓰지 말 것 (AI 슬롭):
 {slop_words}
@@ -620,20 +644,85 @@ class ScriptGenerator:
 [원글 내용]
 {source_text}
 
-출력 형식 (JSON):
+출력 형식 (반드시 JSON만 출력, 설명 붙이지 마):
 {{
-  "title": "숏츠 제목 (20자 이내, 이모지 금지)",
-  "tts_script": "TTS로 읽을 대본 전문",
+  "title": "숏츠 제목 (15자 이내, 이모지 금지, ㅋㅋ/ㄷㄷ 가능)",
+  "tts_script": "줄바꿈(\\n)으로 구분된 대본 전문",
   "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
-  "description": "유튜브 설명란 (2줄)"
+  "description": "유튜브 설명란 2줄 (호기심 유발)"
+}}"""
+
+    # ── 원글 없을 때: 주제 기반 정보형 대본 ──
+    PROMPT_NO_SOURCE = """너는 유튜브 쇼츠 나레이터야. 20대 남성, 인터넷 커뮤니티 말투.
+
+아래 [주제]에 대해 사람들이 궁금해할 만한 정보를 쇼츠 대본으로 만들어.
+
+핵심 규칙:
+1. 널리 알려진 사실만 사용. 확인 안 된 건 "~라고 함", "~이라는 말 있음" 표현.
+2. 문장당 8~15자로 짧게 끊어. 한 문장에 한 가지 정보만.
+3. 총 18~25문장. 전체 250~350자.
+4. 말투: "~함", "~임", "~인듯", "~ㅋㅋ", "~ㄷㄷ" 등 자연스러운 반말.
+5. "여러분", 실명, **볼드**, 이모지 전부 금지.
+6. 구체적인 숫자, 비교, 꿀팁을 넣어서 정보 밀도를 높여.
+7. 뻔한 상식 나열 금지. 의외성 있는 팩트 위주로.
+
+첫 문장 (아래 중 랜덤 택1):
+- "야 이거 실화임?"
+- "아니 이게 말이 돼?"
+- "ㅋㅋㅋ 미쳤다 진짜"
+- "와 이건 좀 소름인데"
+- "이거 모르면 손해임"
+- "핵꿀팁 발견했다"
+- "역대급 나왔다 ㄷㄷ"
+- "몰랐으면 진짜 큰일남"
+
+마지막 문장 (아래 중 랜덤 택1):
+- "ㄹㅇ 레전드ㅋㅋ"
+- "소름돋음ㄷㄷ"
+- "진짜 미쳤다ㅋㅋㅋ"
+- "안 해본 사람 없게 해주세요"
+- "댓글로 알려줘 ㄱㄱ"
+- "이거 저장 필수임"
+- "다음편 궁금하면 구독 ㄱ"
+- "공유 안 하면 손해임"
+
+절대 쓰지 말 것 (AI 슬롭):
+{slop_words}
+
+[주제]
+{topic}
+
+[뉴스 헤드라인 참고]
+{source_text}
+
+출력 형식 (반드시 JSON만 출력, 설명 붙이지 마):
+{{
+  "title": "숏츠 제목 (15자 이내, 이모지 금지, ㅋㅋ/ㄷㄷ 가능)",
+  "tts_script": "줄바꿈(\\n)으로 구분된 대본 전문",
+  "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
+  "description": "유튜브 설명란 2줄 (호기심 유발)"
 }}"""
 
     def _build_prompt(self, topic: str, source_text: str) -> str:
-        return self.PROMPT_TEMPLATE.format(
-            topic=topic,
-            source_text=source_text or "관련 뉴스 없음 - 일반 상식 기반으로 작성",
-            slop_words=", ".join(Config.AI_SLOP_WORDS),
-        )
+        slop = ", ".join(Config.AI_SLOP_WORDS)
+        has_real_source = bool(source_text and len(source_text) > 50
+                               and "관련 뉴스 없음" not in source_text)
+
+        if has_real_source:
+            # 원글 본문이 있으면 팩트 기반 프롬프트
+            return self.PROMPT_WITH_SOURCE.format(
+                topic=topic,
+                source_text=source_text[:2000],
+                slop_words=slop,
+            )
+        else:
+            # 원글 없으면 정보형 프롬프트 (뉴스 헤드라인만 참고)
+            headlines = source_text if source_text else "관련 헤드라인 없음"
+            return self.PROMPT_NO_SOURCE.format(
+                topic=topic,
+                source_text=headlines,
+                slop_words=slop,
+            )
 
     def _parse_json_response(self, text: str) -> dict:
         """Gemini JSON 응답 파싱 (마크다운 + 제어문자 처리)."""
@@ -672,7 +761,7 @@ class ScriptGenerator:
             response = model.generate_content(
                 prompt,
                 generation_config=genai.GenerationConfig(
-                    temperature=0.9,
+                    temperature=0.7,
                     max_output_tokens=1024,
                 ),
             )
@@ -702,7 +791,7 @@ class ScriptGenerator:
                 model="gpt-4o-mini",
                 response_format={"type": "json_object"},
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.9,
+                temperature=0.7,
             )
 
             result = json.loads(response.choices[0].message.content)
@@ -714,26 +803,47 @@ class ScriptGenerator:
             return None
 
     def _quality_check(self, script_data: dict) -> int:
-        """품질 채점 (100점 만점, 감점 방식)"""
+        """품질 채점 (100점 만점, 감점 방식) — 콘텐츠 다양성 + 정보 밀도 포함"""
         score = 100
         reasons = []
 
         text = script_data.get("tts_script", "")
         title = script_data.get("title", "")
 
-        # 길이 체크
-        if len(text) < 200:
-            score -= 20
+        # 길이 체크 (250~350자 최적)
+        if len(text) < 150:
+            score -= 30
             reasons.append(f"너무 짧음 ({len(text)}자)")
-        elif len(text) > 350:
-            score -= 20
+        elif len(text) < 250:
+            score -= 10
+            reasons.append(f"짧음 ({len(text)}자)")
+        elif len(text) > 400:
+            score -= 15
             reasons.append(f"너무 김 ({len(text)}자)")
 
+        # 문장 수 체크 (15~25문장 최적)
+        sentences = [s.strip() for s in text.split("\n") if s.strip()]
+        if len(sentences) < 12:
+            score -= 15
+            reasons.append(f"문장 부족 ({len(sentences)}문장)")
+        elif len(sentences) > 30:
+            score -= 10
+            reasons.append(f"문장 과다 ({len(sentences)}문장)")
+
+        # 문장 길이 균일성 체크 (15자 초과 문장 비율)
+        long_sentences = [s for s in sentences if len(s) > 18]
+        if len(long_sentences) > len(sentences) * 0.3:
+            score -= 10
+            reasons.append(f"긴 문장 {len(long_sentences)}개 (15자 초과)")
+
         # AI 슬롭 체크
+        slop_found = 0
         for word in Config.AI_SLOP_WORDS:
             if word in text:
-                score -= 15
-                reasons.append(f"AI슬롭: '{word}'")
+                slop_found += 1
+        if slop_found:
+            score -= min(slop_found * 10, 30)
+            reasons.append(f"AI슬롭 {slop_found}개")
 
         # 실명 체크
         name_pattern = r"[김이박최정강조윤장임][가-힣]{1,2}(?:씨|님|이|가|을|를)"
@@ -742,7 +852,8 @@ class ScriptGenerator:
             reasons.append("실명 포함 의심")
 
         # 금지어 체크
-        banned = ["여러분", "경제학", "딜레마", "마무리하며"]
+        banned = ["여러분", "경제학", "딜레마", "마무리하며", "정리하자면",
+                  "알아보겠", "살펴보겠", "흥미롭", "놀라운"]
         for bw in banned:
             if bw in text:
                 score -= 15
@@ -758,15 +869,30 @@ class ScriptGenerator:
             "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
             "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]"
         )
-        if emoji_pattern.search(title):
-            score -= 5
-            reasons.append("제목에 이모지")
+        if emoji_pattern.search(title) or emoji_pattern.search(text):
+            score -= 10
+            reasons.append("이모지 포함")
 
         # 커뮤니티 말투 체크 (보너스)
-        comm_markers = ["ㅋㅋ", "ㄹㅇ", "ㄷㄷ", "야 ", "실화"]
-        if not any(m in text for m in comm_markers):
-            score -= 10
+        comm_markers = ["ㅋㅋ", "ㄹㅇ", "ㄷㄷ", "야 ", "실화", "미쳤", "대박",
+                        "ㄱㄱ", "~임", "~함", "~인듯"]
+        comm_count = sum(1 for m in comm_markers if m in text)
+        if comm_count == 0:
+            score -= 15
+            reasons.append("커뮤니티 말투 전무")
+        elif comm_count < 3:
+            score -= 5
             reasons.append("커뮤니티 말투 부족")
+
+        # 반복 문장 체크 (동일 시작 문장 감점)
+        starts = [s[:5] for s in sentences if len(s) >= 5]
+        if starts:
+            from collections import Counter
+            start_counts = Counter(starts)
+            repeated = sum(1 for c in start_counts.values() if c > 2)
+            if repeated:
+                score -= repeated * 5
+                reasons.append(f"반복 패턴 {repeated}개")
 
         score = max(0, score)
 
@@ -778,12 +904,14 @@ class ScriptGenerator:
         return score
 
     def _post_process(self, script_data: dict) -> dict:
-        """후처리: 볼드 제거 + AI 슬롭 교체"""
+        """후처리: 볼드 제거 + AI 슬롭 교체 + 긴 문장 분리"""
         text = script_data.get("tts_script", "")
 
+        # 볼드/이탤릭 마크다운 제거
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"\*(.+?)\*", r"\1", text)
 
+        # AI 슬롭 → 커뮤니티 말투로 교체
         replacements = {
             "흥미롭": "재밌",
             "놀라운": "대박인",
@@ -792,11 +920,56 @@ class ScriptGenerator:
             "탐구": "파헤치",
             "알아보겠": "얘기해볼",
             "살펴보겠": "봐볼",
+            "주목할 만한": "개쩌는",
+            "눈여겨볼": "봐야 할",
+            "한편으로는": "근데",
+            "전문가들은": "사람들이",
+            "귀추가 주목": "기대됨",
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
 
+        # 이모지 제거
+        emoji_pattern = re.compile(
+            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
+            "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
+            "\U00002702-\U000027B0\U0000FE00-\U0000FE0F"
+            "\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F]"
+        )
+        text = emoji_pattern.sub("", text)
+
+        # 20자 이상 문장 → 자연스러운 위치에서 분리
+        lines = text.split("\n")
+        new_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if len(line) > 20:
+                # 조사/어미 뒤에서 분리 시도
+                mid = len(line) // 2
+                split_pos = -1
+                for sep in [". ", "! ", "? ", ", ", "~ ", "ㅋ ", "는 ", "을 ", "를 "]:
+                    pos = line.find(sep, mid - 5)
+                    if 5 <= pos <= len(line) - 5:
+                        split_pos = pos + len(sep)
+                        break
+                if split_pos > 0:
+                    new_lines.append(line[:split_pos].strip())
+                    new_lines.append(line[split_pos:].strip())
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+
+        text = "\n".join(new_lines)
         script_data["tts_script"] = text
+
+        # 제목에서도 이모지 제거
+        title = script_data.get("title", "")
+        title = emoji_pattern.sub("", title).strip()
+        script_data["title"] = title
+
         return script_data
 
     def generate(self, topic: str, source_text: str) -> dict:
@@ -1242,9 +1415,18 @@ class VideoRenderer:
                 return Config.GRADIENT_COLORS[category]
         return Config.GRADIENT_COLORS["default"]
 
+    @staticmethod
+    def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+        """#RRGGBB → (R, G, B)"""
+        h = hex_color.lstrip("#")
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
     def _generate_gradient_bg(self, topic: str) -> Optional[str]:
-        """FFmpeg로 주제 맞춤 그라디언트 배경 영상 생성 (65초)"""
+        """FFmpeg geq 필터로 실제 세로 그라디언트 배경 영상 생성 (65초)"""
         c0, c1 = self._resolve_gradient_colors(topic)
+        r0, g0, b0 = self._hex_to_rgb(c0)
+        r1, g1, b1 = self._hex_to_rgb(c1)
+
         temp_dir = Config.BASE_DIR / "temp"
         temp_dir.mkdir(exist_ok=True)
         gen_mp4 = str(temp_dir / "gradient_bg.mp4")
@@ -1252,12 +1434,16 @@ class VideoRenderer:
         dur = 65
         W, H, FPS = Config.WIDTH, Config.HEIGHT, Config.FPS
 
-        # color + noise + vignette: 어두운 그라디언트 느낌 + 미세한 움직임
+        # geq 필터: 상단(c0) → 하단(c1) 세로 그라디언트 + 노이즈로 미세 움직임
+        # Y좌표(0=상단, H=하단) 기반 선형 보간
+        geq_r = f"{r0}+(({r1}-{r0})*Y/{H})"
+        geq_g = f"{g0}+(({g1}-{g0})*Y/{H})"
+        geq_b = f"{b0}+(({b1}-{b0})*Y/{H})"
+
         lavfi = (
-            f"color=c={c0}:s={W}x{H}:r={FPS}:d={dur},"
-            f"noise=alls=20:allf=t+u,"
-            f"vignette=PI/4,"
-            f"eq=brightness=-0.05:contrast=1.1"
+            f"color=c=black:s={W}x{H}:r={FPS}:d={dur},"
+            f"geq=r='{geq_r}':g='{geq_g}':b='{geq_b}',"
+            f"noise=alls=15:allf=t+u"
         )
 
         try:
@@ -1269,14 +1455,14 @@ class VideoRenderer:
                 "-pix_fmt", "yuv420p",
                 gen_mp4,
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=90)
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
             if result.returncode == 0 and os.path.exists(gen_mp4):
                 size_mb = os.path.getsize(gen_mp4) / (1024 * 1024)
                 print(f"  [OK] 그라디언트 배경 생성 ({c0}→{c1}, {size_mb:.1f}MB)")
                 return gen_mp4
             else:
-                stderr = result.stderr.decode("utf-8", errors="ignore")[-200:]
-                print(f"  [WARN] 그라디언트 생성 실패: {stderr[:120]}")
+                stderr = result.stderr.decode("utf-8", errors="ignore")[-300:]
+                print(f"  [WARN] 그라디언트 생성 실패: {stderr[:200]}")
         except Exception as e:
             print(f"  [WARN] 그라디언트 생성 실패: {e}")
         return None
