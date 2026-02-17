@@ -129,6 +129,29 @@ class Config:
         "카페", "맥도날드", "스타벅스", "올리브영", "다이소",
     ]
 
+    # ── 주제별 배경 모드 ──
+    TOPIC_BG_MAP: dict[str, list[str]] = {
+        "gameplay": ["게임", "롤", "서퍼", "챌린지", "밈", "짤", "마크", "발로란트"],
+        "gradient": [
+            "맛집", "편의점", "카페", "음식", "요리", "레시피",
+            "다이소", "올리브영", "뷰티", "패션", "꿀팁", "가성비",
+            "자취", "꿀조합", "신상", "후기", "먹방",
+        ],
+    }
+
+    # 주제 키워드 → 그라디언트 색상 (어두운 톤 = 자막 가독성)
+    GRADIENT_COLORS: dict[str, tuple[str, str]] = {
+        "food":    ("#1a0800", "#2d1000"),  # 따뜻한 오렌지 다크
+        "beauty":  ("#1a0020", "#200030"),  # 핑크→보라 다크
+        "info":    ("#000a1a", "#0a0020"),  # 다크블루→퍼플
+        "default": ("#0a0a0f", "#0f0f18"),  # 다크그레이→블랙
+    }
+    GRADIENT_TOPIC_MAP: dict[str, list[str]] = {
+        "food":   ["맛집", "편의점", "음식", "요리", "레시피", "먹방", "꿀조합", "카페", "맥도날드", "스타벅스"],
+        "beauty": ["올리브영", "뷰티", "패션", "다이소", "화장", "스킨"],
+        "info":   ["꿀팁", "가성비", "후기", "자취", "신상", "정보"],
+    }
+
 
 # ============================================================================
 # retry 데코레이터 (지수 백오프 + 지터)
@@ -1205,44 +1228,82 @@ class VideoRenderer:
     def _find_ffprobe(self) -> str:
         return _find_ffprobe_exe()
 
-    def _get_background_video(self) -> Optional[str]:
-        """배경 영상 탐색: data/backgrounds/ 전체 스캔 → 없으면 그라디언트 자동 생성"""
-        bg_dir = Config.BG_DIR
-        videos = []
-        if bg_dir.exists():
-            videos = list(bg_dir.rglob("*.mp4"))
-        if videos:
-            selected = random.choice(videos)
-            print(f"  배경 선택: {selected.name}")
-            return str(selected)
+    def _resolve_bg_mode(self, topic: str) -> str:
+        """주제 키워드 → 배경 모드 결정 (gameplay / gradient)"""
+        for mode, keywords in Config.TOPIC_BG_MAP.items():
+            if any(kw in topic for kw in keywords):
+                return mode
+        return "gradient"  # 기본값
 
-        # 배경 영상 없음 → FFmpeg 그라디언트 배경 자동 생성
-        print("  [WARN] 배경 영상 없음 → 그라디언트 배경 자동 생성")
+    def _resolve_gradient_colors(self, topic: str) -> tuple[str, str]:
+        """주제 키워드 → 그라디언트 색상 선택"""
+        for category, keywords in Config.GRADIENT_TOPIC_MAP.items():
+            if any(kw in topic for kw in keywords):
+                return Config.GRADIENT_COLORS[category]
+        return Config.GRADIENT_COLORS["default"]
+
+    def _generate_gradient_bg(self, topic: str) -> Optional[str]:
+        """FFmpeg로 주제 맞춤 그라디언트 배경 영상 생성 (65초)"""
+        c0, c1 = self._resolve_gradient_colors(topic)
         temp_dir = Config.BASE_DIR / "temp"
         temp_dir.mkdir(exist_ok=True)
-        gradient_mp4 = str(temp_dir / "gradient_bg.mp4")
+        gen_mp4 = str(temp_dir / "gradient_bg.mp4")
+        ffmpeg = self._find_ffmpeg()
+        dur = 65
+        W, H, FPS = Config.WIDTH, Config.HEIGHT, Config.FPS
+
+        # color + noise + vignette: 어두운 그라디언트 느낌 + 미세한 움직임
+        lavfi = (
+            f"color=c={c0}:s={W}x{H}:r={FPS}:d={dur},"
+            f"noise=alls=20:allf=t+u,"
+            f"vignette=PI/4,"
+            f"eq=brightness=-0.05:contrast=1.1"
+        )
+
         try:
-            ffmpeg = self._find_ffmpeg()
-            # 어두운 보라(#1a0533) → 남색(#0a1628) 세로 그라디언트 + 느린 색상 순환
             cmd = [
                 ffmpeg, "-y",
-                "-f", "lavfi", "-i",
-                (
-                    f"gradients=s={Config.WIDTH}x{Config.HEIGHT}:"
-                    f"c0=#1a0533:c1=#0a1628:"
-                    f"duration=65:speed=0.01:r={Config.FPS}"
-                ),
-                "-t", "65",
-                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
-                gradient_mp4,
+                "-f", "lavfi", "-i", lavfi,
+                "-t", str(dur),
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+                "-pix_fmt", "yuv420p",
+                gen_mp4,
             ]
-            result = subprocess.run(cmd, capture_output=True, timeout=60)
-            if result.returncode == 0 and os.path.exists(gradient_mp4):
-                print(f"  [OK] 그라디언트 배경 생성 완료")
-                return gradient_mp4
+            result = subprocess.run(cmd, capture_output=True, timeout=90)
+            if result.returncode == 0 and os.path.exists(gen_mp4):
+                size_mb = os.path.getsize(gen_mp4) / (1024 * 1024)
+                print(f"  [OK] 그라디언트 배경 생성 ({c0}→{c1}, {size_mb:.1f}MB)")
+                return gen_mp4
+            else:
+                stderr = result.stderr.decode("utf-8", errors="ignore")[-200:]
+                print(f"  [WARN] 그라디언트 생성 실패: {stderr[:120]}")
         except Exception as e:
             print(f"  [WARN] 그라디언트 생성 실패: {e}")
+        return None
 
+    def _get_background_video(self, topic: str = "") -> Optional[str]:
+        """주제 기반 배경 선택: gameplay→실제영상 / gradient→자동생성"""
+        bg_mode = self._resolve_bg_mode(topic)
+        print(f"  배경 모드: {bg_mode} (주제: {topic[:30]})")
+
+        # gameplay 모드: 실제 배경 영상 사용
+        if bg_mode == "gameplay":
+            bg_dir = Config.BG_DIR
+            videos = []
+            if bg_dir.exists():
+                videos = list(bg_dir.rglob("*.mp4"))
+            if videos:
+                selected = random.choice(videos)
+                print(f"  배경 선택: {selected.name}")
+                return str(selected)
+            print("  [INFO] gameplay 영상 없음 → 그라디언트 폴백")
+
+        # gradient 모드 (또는 gameplay 폴백)
+        result = self._generate_gradient_bg(topic)
+        if result:
+            return result
+
+        # 최종 폴백: None → render()에서 검정 단색
         return None
 
     def _get_random_bgm(self) -> Optional[str]:
@@ -1266,13 +1327,14 @@ class VideoRenderer:
         except Exception:
             return 300
 
-    def render(self, tts_mp3: str, ass_subtitle: str, output_mp4: str) -> str:
+    def render(self, tts_mp3: str, ass_subtitle: str, output_mp4: str,
+               topic: str = "") -> str:
         print("\n" + "=" * 60)
         print("STEP 5: FFmpeg 렌더링")
         print("=" * 60)
 
         ffmpeg = self._find_ffmpeg()
-        bg_video = self._get_background_video()
+        bg_video = self._get_background_video(topic=topic)
         bgm_mp3 = self._get_random_bgm()
 
         tts_duration = self._get_video_duration(tts_mp3)
@@ -1857,7 +1919,7 @@ def make_one_perfect_short(
     output_mp4 = str(work_dir / output_filename)
 
     renderer = VideoRenderer()
-    final_video = renderer.render(tts_mp3, ass_file, output_mp4)
+    final_video = renderer.render(tts_mp3, ass_file, output_mp4, topic=selected_topic)
 
     # ── STEP 6: 이력 저장 ──
     print("\n" + "=" * 60)
