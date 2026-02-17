@@ -18,18 +18,68 @@ from youshorts.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── 도파민 폴백 주제 (크롤링 전부 실패 시) ──
-DOPAMINE_FALLBACK_TOPICS: list[str] = [
-    "알바 진상 손님 레전드 모음",
-    "소개팅에서 절대 하면 안 되는 행동",
-    "직장 상사한테 한 마디 했더니 벌어진 일",
-    "자취하면서 겪은 소름 돋는 경험",
-    "택배 잘못 왔는데 열어봤더니",
-    "군대에서 생긴 레전드 사건",
-    "룸메이트 때문에 미쳐버린 썰",
-    "중고거래 사기 당할 뻔한 썰",
-    "면접에서 면접관이 한 말 실화냐",
-    "편의점 야간 알바 소름 돋는 경험",
+# ── 레퍼런스 채널급 폴백 주제 (크롤링 전부 실패 시) ──
+DOPAMINE_FALLBACK_TOPICS: list[dict[str, str]] = [
+    {
+        "title": "배달 치킨 3마리 시켰는데 준 반찬 레전드ㄷㄷ",
+        "body": "배달앱으로 치킨 3마리 주문했는데 사장님이 서비스로 준 반찬이 역대급이었다. 감자튀김 2봉, 콜라 2L, 떡볶이까지. 리뷰 남겼더니 사장님 답글이 더 레전드.",
+        "source": "폴백"
+    },
+    {
+        "title": "편의점 알바 3개월 만에 목격한 진상 TOP3ㅋㅋ",
+        "body": "편의점에서 3개월 알바하면서 겪은 진상 손님 3명. 1등은 삼각김밥 전자레인지 5분 돌려달라는 사람. 2등은 1+1 제품 3개 가져와서 공짜 달라는 사람.",
+        "source": "폴백"
+    },
+    {
+        "title": "중고거래로 에어팟 샀는데 택배 열어보니 결말ㄷㄷ",
+        "body": "당근에서 에어팟 프로 8만원에 올라온 거 바로 샀는데, 택배 열어보니 에어팟 케이스 안에 사탕이 들어있었다. 바로 경찰 신고했더니 판매자 반응이 더 충격.",
+        "source": "폴백"
+    },
+    {
+        "title": "카페 알바가 실수로 준 음료 1잔 때문에 생긴 일ㅋㅋ",
+        "body": "스타벅스 알바가 아메리카노 대신 자바칩 프라푸치노를 줬는데, 손님이 먹어보고 감동받아서 매일 오기 시작. 결국 그 손님이 사장한테 칭찬 편지까지 보냄.",
+        "source": "폴백"
+    },
+    {
+        "title": "식당 사장이 손님 1명한테 서비스 거절한 이유ㄷㄷ",
+        "body": "단골 식당에서 사장님이 갑자기 서비스 안 준다고 했는데, 알고 보니 그 손님이 매번 서비스만 먹고 리뷰에 별 1개 주는 사람이었다.",
+        "source": "폴백"
+    },
+    {
+        "title": "배달 기사한테 팁 5만원 줬더니 생긴 일ㅋㅋ",
+        "body": "비 오는 날 배달 기사한테 현금 5만원 팁을 줬더니, 다음날 같은 기사가 와서 직접 만든 반찬을 가져왔다. 그 뒤로 매번 배달 올 때마다 서비스가 추가됨.",
+        "source": "폴백"
+    },
+    {
+        "title": "PC방 손님이 라면 20개 주문한 결말ㄷㄷ",
+        "body": "PC방에서 혼자 라면 20개를 시킨 손님이 있었는데, 알고 보니 유튜브 먹방 찍는 사람이었다. 문제는 다 먹고 나서 자리 상태가 역대급.",
+        "source": "폴백"
+    },
+    {
+        "title": "마트 직원이 할인 스티커 붙이는 시간 알려준 결말ㅋㅋ",
+        "body": "이마트 직원이 마감 할인 시간을 SNS에 올렸다가 그 시간에 200명이 몰린 사건. 매장 난리 나고 직원은 시말서 쓰고 결국 그 시간대 할인 폐지됨.",
+        "source": "폴백"
+    },
+    {
+        "title": "택시 기사가 손님 1명 거부한 이유 알고보니ㄷㄷ",
+        "body": "택시 기사가 특정 손님을 계속 거부했는데, 알고 보니 그 손님이 매번 택시에서 음식을 흘리고 토하고 도망가는 상습범이었다. CCTV 모아서 신고한 결과.",
+        "source": "폴백"
+    },
+    {
+        "title": "쿠팡 배달 1건으로 100만원 벌어버린 실화ㅋㅋ",
+        "body": "쿠팡 배달하다가 고객이 실수로 100만원짜리 물건을 반품 안 한 채 돌려보냈는데, 정직하게 신고했더니 쿠팡에서 포상금 100만원을 줌.",
+        "source": "폴백"
+    },
+    {
+        "title": "고깃집 2인분 시켰는데 나온 양 레전드 논란ㄷㄷ",
+        "body": "삼겹살 2인분 시켰는데 나온 고기가 손바닥만 했음. 항의했더니 사장이 '원래 이 양'이라고 해서 리뷰 남겼더니 사장 답글이 더 역대급.",
+        "source": "폴백"
+    },
+    {
+        "title": "중국집 배달 40분 걸린 이유 알고보니ㅋㅋ",
+        "body": "짜장면 배달이 40분이나 걸려서 전화했더니, 배달 기사가 길에서 교통사고 목격하고 신고+응급처치까지 하고 온 거였다. 별점 5개 박고 팁 만원 더 줌.",
+        "source": "폴백"
+    }
 ]
 
 # ── 도파민 키워드 ──
@@ -130,16 +180,23 @@ class CommunityCrawler:
 
         # 이미 사용한 제목 제외
         filtered = [p for p in scored if p["title"] not in self.used_titles]
-        selected = filtered[:count]
 
-        for p in selected:
-            self.used_titles.add(p["title"])
+        # 점수 10점 이상만 사용
+        high_quality = [p for p in filtered if p.get("score", 0) >= 10]
 
-        # 아무것도 없으면 폴백
-        if not selected:
-            return self._get_fallback()[:count]
+        if high_quality:
+            selected = high_quality[:count]
+            for p in selected:
+                self.used_titles.add(p["title"])
+                logger.info(
+                    "[주제] 선정: %s (점수: %d, 소스: %s)",
+                    p["title"][:30], p["score"], p.get("source", "?")
+                )
+            return selected
 
-        return selected
+        # 전부 10점 미만이면 폴백 사용
+        logger.info("[주제] 크롤링 결과 품질 낮음 → 폴백 주제 사용")
+        return self._get_fallback()[:count]
 
     # ──────────────────────────────────────
     # 점수 산출
@@ -150,30 +207,66 @@ class CommunityCrawler:
         score = 0
         title = post.get("title", "")
         body = post.get("body", "")
+        text = title + " " + body
 
-        # 도파민 키워드
-        for word in _DOPAMINE_KEYWORDS:
-            if word in title:
-                score += 3
-            if word in body:
-                score += 1
+        # ── 대박 키워드 (조회수 직결) ──
+        viral_keywords = [
+            '레전드', '역대급', '논란', '충격', '결말', '대박',
+            '소름', '미친', '실화', '참교육', '복수', '폭로',
+            'ㄷㄷ', 'ㅋㅋ', 'ㄹㅇ', '빌런', '진상', '줄퇴사',
+            '황당', '역관광', 'CCTV', '현실'
+        ]
+        for kw in viral_keywords:
+            if kw in text:
+                score += 5
 
-        # 스토리성
-        for word in _STORY_INDICATORS:
-            if word in body:
-                score += 2
-
-        # 길이 적합성
-        body_len = len(body)
-        if 100 <= body_len <= 800:
+        # ── 음식/배달/알바 카테고리 (핵심 장르) ──
+        food_keywords = [
+            '배달', '치킨', '피자', '짜장면', '초밥', '마라탕',
+            '편의점', '알바', '카페', '식당', '횟집', '고깃집',
+            '서브웨이', 'PC방', '정육점', '빵집', '떡볶이',
+            '중국집', '손님', '사장', '주문', '리뷰', '별점'
+        ]
+        food_count = sum(1 for kw in food_keywords if kw in text)
+        if food_count >= 1:
+            score += 8
+        if food_count >= 2:
             score += 5
-        elif body_len < 50:
-            score -= 10
 
-        # 정치/혐오 감점
-        for word in _BAD_KEYWORDS:
-            if word in title or word in body:
-                score -= 100
+        # ── 구체적 숫자 포함 (100만뷰 공식) ──
+        import re
+        numbers = re.findall(r'\d+', title)
+        if numbers:
+            score += 4  # 숫자 있으면 +4
+            for num in numbers:
+                if int(num) >= 100:
+                    score += 3  # 큰 숫자면 추가 +3
+
+        # ── 갈등/스토리 구조 ──
+        conflict_keywords = [
+            '이유', '결말', '때문에', '알고보니', '반전',
+            '그런데', '근데', '했더니', '시켰는데', '줬더니',
+            '몰래', '거절', '거부', '요구', '항의', '신고'
+        ]
+        for kw in conflict_keywords:
+            if kw in text:
+                score += 3
+
+        # ── 제목 길이 적합성 ──
+        if 15 <= len(title) <= 35:
+            score += 3  # 최적 길이
+
+        # ━━ 절대 금지 (-100점) ━━
+        banned = [
+            '정치', '선거', '대통령', '여당', '야당', '국회',
+            '페미', '일베', '한남', '한녀',
+            '고양이', '강아지', '반려동물', '육아', '임신',
+            '톡선', '투표', '설문', '광고', '홍보', '구독',
+            '주식', '코인', '비트', '부동산'
+        ]
+        for kw in banned:
+            if kw in text:
+                return -100
 
         return score
 
@@ -182,9 +275,8 @@ class CommunityCrawler:
     # ──────────────────────────────────────
 
     def _get_fallback(self) -> list[dict[str, Any]]:
-        """크롤링 전부 실패 시 도파민 폴백 주제를 반환합니다."""
-        topic = random.choice(DOPAMINE_FALLBACK_TOPICS)
-        return [{"title": topic, "body": "", "source": "fallback"}]
+        """크롤링 전부 실패 시 레퍼런스 채널급 폴백 주제를 반환합니다."""
+        return [random.choice(DOPAMINE_FALLBACK_TOPICS)]
 
     # ──────────────────────────────────────
     # 크롤러 1: 네이트판

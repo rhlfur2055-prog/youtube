@@ -13,6 +13,8 @@ import glob
 import os
 import random
 import re
+import subprocess
+import shutil
 from datetime import datetime
 from typing import Any
 
@@ -62,6 +64,145 @@ except ImportError:
         ImageClip,
         VideoFileClip,
     )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# FFmpeg 직접 호출 함수 (OOM 해결)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def get_ffmpeg_path() -> str | None:
+    """FFmpeg 경로 자동 탐지.
+
+    Returns:
+        FFmpeg 실행 파일 경로 또는 None.
+    """
+    path = shutil.which('ffmpeg')
+    if path:
+        return path
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        pass
+    common = [
+        r'C:\ffmpeg\bin\ffmpeg.exe',
+        r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+        r'C:\tool\ffmpeg\bin\ffmpeg.exe',
+    ]
+    for p in common:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def render_with_ffmpeg(
+    bg_video: str,
+    tts_audio: str,
+    subtitle_srt: str,
+    output_path: str,
+    config: dict[str, Any],
+) -> str:
+    """FFmpeg 직접 렌더링. MoviePy 대비 메모리 1/10.
+
+    Args:
+        bg_video: 배경 영상 경로.
+        tts_audio: TTS 오디오 경로.
+        subtitle_srt: SRT 자막 파일 경로.
+        output_path: 출력 파일 경로.
+        config: 랜덤화 설정 (font_size, margin_v, bg_darken 등).
+
+    Returns:
+        출력 파일 경로.
+
+    Raises:
+        FileNotFoundError: FFmpeg 미설치 시.
+        RuntimeError: FFmpeg 실행 실패 시.
+    """
+    ffmpeg = get_ffmpeg_path()
+    if not ffmpeg:
+        raise FileNotFoundError("FFmpeg 미설치. pip install imageio-ffmpeg 또는 시스템 PATH에 추가하세요.")
+
+    # SRT 경로에 한글/공백 있으면 임시 복사
+    ensure_dir(os.path.join(os.getcwd(), 'temp'))
+    safe_srt = os.path.join('temp', 'sub.srt')
+    shutil.copy2(subtitle_srt, safe_srt)
+    # Windows 경로 역슬래시 → 슬래시 (FFmpeg 호환)
+    safe_srt_escaped = safe_srt.replace('\\', '/').replace(':', '\\\\:')
+
+    font_size = config.get('font_size', 80)
+    margin_v = config.get('margin_v', 60)
+    darken = config.get('bg_darken', 0.25)
+    brightness = round(-darken, 2)  # 0.25 → -0.25
+
+    subtitle_style = (
+        f"FontSize={font_size},"
+        f"PrimaryColour=&H00FFFFFF,"
+        f"OutlineColour=&H00000000,"
+        f"Outline=2,"
+        f"Alignment=2,"
+        f"MarginV={margin_v}"
+    )
+
+    cmd = [
+        ffmpeg, '-y',
+        '-i', bg_video,
+        '-i', tts_audio,
+        '-vf', f"eq=brightness={brightness}:contrast=1.1,subtitles='{safe_srt_escaped}':force_style='{subtitle_style}'",
+        '-c:v', 'libx264',
+        '-preset', 'fast',
+        '-crf', '23',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-shortest',
+        '-fps_mode', 'cfr',
+        '-r', '24',
+        '-s', '1080x1920',
+        output_path
+    ]
+
+    logger.info("[렌더링] FFmpeg 시작: %s", output_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        logger.error("[FFmpeg 에러] %s", result.stderr[-500:] if result.stderr else "")
+        raise RuntimeError(f"FFmpeg 실패: returncode={result.returncode}")
+    logger.info("[렌더링] FFmpeg 완료: %s", output_path)
+    return output_path
+
+
+def merge_bg_clips_ffmpeg(clip_paths: list[str], output_path: str) -> str:
+    """배경 클립들을 FFmpeg concat으로 합치기 (메모리 0 사용).
+
+    Args:
+        clip_paths: 배경 클립 경로 리스트.
+        output_path: 출력 파일 경로.
+
+    Returns:
+        출력 파일 경로.
+    """
+    ffmpeg = get_ffmpeg_path()
+    if not ffmpeg:
+        raise FileNotFoundError("FFmpeg 미설치")
+
+    ensure_dir(os.path.join(os.getcwd(), 'temp'))
+    concat_list = os.path.join('temp', 'concat_list.txt')
+    with open(concat_list, 'w', encoding='utf-8') as f:
+        for clip in clip_paths:
+            safe = clip.replace('\\', '/')
+            f.write(f"file '{safe}'\n")
+
+    cmd = [
+        ffmpeg, '-y',
+        '-f', 'concat', '-safe', '0',
+        '-i', concat_list,
+        '-c', 'copy',
+        '-an',  # 오디오 제거 (TTS로 교체할 거니까)
+        output_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        logger.warning("[FFmpeg concat 실패] %s", result.stderr[-200:] if result.stderr else "")
+    return output_path
 
 
 def _img_to_clip(
