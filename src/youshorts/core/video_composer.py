@@ -130,16 +130,20 @@ def render_with_ffmpeg(
     # Windows 경로 역슬래시 → 슬래시 (FFmpeg 호환)
     safe_srt_escaped = safe_srt.replace('\\', '/').replace(':', '\\\\:')
 
-    font_size = config.get('font_size', 80)
-    margin_v = config.get('margin_v', 60)
+    font_size = config.get('font_size', 30)
+    margin_v = config.get('margin_v', 25)
     darken = config.get('bg_darken', 0.25)
     brightness = round(-darken, 2)  # 0.25 → -0.25
 
+    # 레퍼런스 채널급 자막 스타일: 하단 15% 영역, 반투명 배경
     subtitle_style = (
         f"FontSize={font_size},"
         f"PrimaryColour=&H00FFFFFF,"
         f"OutlineColour=&H00000000,"
+        f"BackColour=&H80000000,"
+        f"BorderStyle=3,"
         f"Outline=2,"
+        f"Shadow=1,"
         f"Alignment=2,"
         f"MarginV={margin_v}"
     )
@@ -890,11 +894,14 @@ def _randomize_video_params() -> dict[str, Any]:
         (255, 165, 0),    # 오렌지
     ]
     return {
-        # 자막
-        "subtitle_font_size": random.randint(70, 90),
-        "subtitle_y_ratio": round(random.uniform(0.40, 0.55), 2),
+        # 자막 (레퍼런스 채널급 - 화면 하단 15% 영역)
+        "font_size": random.randint(28, 32),
+        "margin_v": random.randint(20, 30),
+        "subtitle_font_size": random.randint(28, 32),
+        "subtitle_y_ratio": round(random.uniform(0.85, 0.90), 2),
         "highlight_color": random.choice(highlight_colors),
         # 배경 어둡기
+        "bg_darken": round(random.uniform(0.18, 0.35), 2),
         "bg_darken_opacity": round(random.uniform(0.18, 0.35), 2),
         # 타이틀 바
         "title_bar_opacity": round(random.uniform(0.5, 0.8), 2),
