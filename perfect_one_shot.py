@@ -11,7 +11,9 @@
 ============================================================================
 """
 
+import argparse
 import asyncio
+import functools
 import io
 import json
 import os
@@ -22,9 +24,11 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional, Sequence, Type, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 # .env 파일 로드 (GOOGLE_API_KEY 등)
 try:
@@ -88,9 +92,71 @@ class Config:
         "마무리하며", "정리하자면", "요약하자면",
     ]
 
+    # ── 생산 한도 ──
+    MAX_PER_DAY = 10  # 하루 최대 생산 개수
+
+    # ── YouTube ──
+    YOUTUBE_PRIVACY = "public"  # public / private / unlisted
+
     # ── FFmpeg ──
     FFMPEG_EXE = "ffmpeg"
     FFPROBE_EXE = "ffprobe"
+
+
+# ============================================================================
+# retry 데코레이터 (지수 백오프 + 지터)
+# ============================================================================
+DEFAULT_RETRYABLE: tuple[Type[BaseException], ...] = (
+    ConnectionError, TimeoutError, OSError,
+)
+
+
+def retry(
+    max_retries: int = 3,
+    backoff_factor: float = 2.0,
+    jitter: float = 0.5,
+    retryable_exceptions: Sequence[Type[BaseException]] = DEFAULT_RETRYABLE,
+) -> Callable[[F], F]:
+    """API 호출 실패 시 자동 재시도 (지수 백오프)."""
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            last_exc: BaseException | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except tuple(retryable_exceptions) as e:
+                    last_exc = e
+                    if attempt < max_retries:
+                        wait = backoff_factor ** attempt + random.uniform(0, jitter)
+                        print(f"  [RETRY] {func.__name__} ({attempt+1}/{max_retries+1}): {e}")
+                        time.sleep(wait)
+            raise last_exc  # type: ignore
+        return wrapper  # type: ignore
+    return decorator
+
+
+# ============================================================================
+# 일일 생산 한도 체크
+# ============================================================================
+def check_daily_limit() -> bool:
+    """오늘 생산 개수가 MAX_PER_DAY 이하인지 확인."""
+    if not Config.HISTORY_FILE.exists():
+        return True
+    try:
+        data = json.loads(Config.HISTORY_FILE.read_text(encoding="utf-8"))
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_count = sum(
+            1 for item in data
+            if item.get("created_at", "").startswith(today)
+        )
+        if today_count >= Config.MAX_PER_DAY:
+            print(f"  [WARN] 일일 한도 도달: {today_count}/{Config.MAX_PER_DAY}개")
+            return False
+        print(f"  오늘 생산: {today_count}/{Config.MAX_PER_DAY}개")
+        return True
+    except Exception:
+        return True
 
 
 # ============================================================================
@@ -865,6 +931,88 @@ class TTSEngine:
 
 
 # ============================================================================
+# STEP 3.5: 오디오 마스터링 (2-pass loudnorm, -14 LUFS)
+# ============================================================================
+def master_audio(input_path: str, output_path: str) -> str:
+    """오디오 볼륨 정규화 + EQ. 2-pass loudnorm."""
+    try:
+        # Pass 1: 현재 음량 측정
+        measure_cmd = [
+            "ffmpeg", "-i", input_path,
+            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json",
+            "-f", "null", "-",
+        ]
+        result = subprocess.run(measure_cmd, capture_output=True, timeout=60)
+        stderr_text = result.stderr.decode("utf-8", errors="ignore")
+
+        json_matches = list(
+            re.finditer(r'\{[^{}]*"input_i"[^{}]*\}', stderr_text, re.DOTALL)
+        )
+        if not json_matches:
+            raise ValueError("loudnorm JSON 파싱 실패")
+
+        measured = json.loads(json_matches[-1].group(0))
+        m_I = measured.get("input_i", "-14.0")
+        m_TP = measured.get("input_tp", "-1.5")
+        m_LRA = measured.get("input_lra", "11.0")
+        m_thresh = measured.get("input_thresh", "-24.0")
+
+        # Pass 2: 정밀 정규화
+        normalize_cmd = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-af", (
+                "highpass=f=80,"
+                "acompressor=threshold=-20dB:ratio=4:attack=5:release=50,"
+                f"loudnorm=I=-14:TP=-1.5:LRA=11:"
+                f"measured_I={m_I}:measured_TP={m_TP}:"
+                f"measured_LRA={m_LRA}:measured_thresh={m_thresh}:"
+                f"linear=true"
+            ),
+            "-ar", "44100", "-ac", "1",
+            output_path,
+        ]
+        subprocess.run(normalize_cmd, capture_output=True, check=True, timeout=120)
+        print("  [OK] 마스터링 완료 (2-pass, -14 LUFS)")
+        return output_path
+
+    except Exception as e:
+        # 1-pass 폴백
+        try:
+            fallback_cmd = [
+                "ffmpeg", "-y", "-i", input_path,
+                "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+                "-ar", "44100", "-ac", "1",
+                output_path,
+            ]
+            subprocess.run(fallback_cmd, capture_output=True, check=True, timeout=120)
+            print("  [OK] 마스터링 완료 (1-pass 폴백)")
+            return output_path
+        except Exception:
+            print(f"  [WARN] 마스터링 실패 - 원본 사용: {e}")
+            return input_path
+
+
+def adjust_audio_speed(audio_path: str, speed_factor: float, output_path: str) -> str:
+    """FFmpeg atempo로 오디오 속도 조절 (0.8~1.25x)."""
+    speed_factor = max(0.8, min(1.25, speed_factor))
+    if abs(speed_factor - 1.0) < 0.01:
+        return audio_path
+
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-i", audio_path,
+            "-filter:a", f"atempo={speed_factor:.4f}",
+            "-vn", output_path,
+        ]
+        subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+        print(f"  [OK] 속도 조절: x{speed_factor:.2f}")
+        return output_path
+    except Exception as e:
+        print(f"  [WARN] 속도 조절 실패: {e}")
+        return audio_path
+
+
+# ============================================================================
 # STEP 4: 단어별 하이라이트 자막 (ASS 형식)
 # ============================================================================
 class SubtitleGenerator:
@@ -1305,6 +1453,7 @@ class HistoryManager:
             "title": title,
             "file": output_file,
             "date": datetime.now().isoformat(),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
         self.history_file.write_text(
             json.dumps(history, ensure_ascii=False, indent=2),
@@ -1314,19 +1463,78 @@ class HistoryManager:
 
 
 # ============================================================================
+# 메타데이터 생성 (해시태그 + SEO 태그)
+# ============================================================================
+class MetadataGenerator:
+    """업로드용 메타데이터 자동 생성."""
+
+    BASE_HASHTAGS = ["#shorts", "#쇼츠", "#숏츠"]
+
+    @staticmethod
+    def generate_hashtags(script_data: dict) -> list[str]:
+        tags = list(MetadataGenerator.BASE_HASHTAGS)
+        for tag in script_data.get("tags", []):
+            clean = tag.strip().replace(" ", "")
+            if not clean.startswith("#"):
+                clean = f"#{clean}"
+            if clean not in tags:
+                tags.append(clean)
+        title = script_data.get("title", "")
+        for word in re.findall(r'[가-힣a-zA-Z]{2,}', title):
+            t = f"#{word}"
+            if t not in tags and len(tags) < 15:
+                tags.append(t)
+        return tags[:15]
+
+    @staticmethod
+    def generate(script_data: dict) -> dict:
+        title = script_data.get("title", "쇼츠")[:46]
+        if "#Shorts" not in title:
+            title = f"{title} #Shorts"
+        hashtags = MetadataGenerator.generate_hashtags(script_data)
+        seo_tags = ["숏츠", "쇼츠", "shorts", "한국"]
+        for tag in script_data.get("tags", []):
+            clean = tag.strip().lstrip("#")
+            if clean and clean not in seo_tags and len(seo_tags) < 20:
+                seo_tags.append(clean)
+        desc_parts = [
+            script_data.get("title", ""),
+            "",
+            " ".join(hashtags),
+            "",
+            "---",
+            "이 영상은 AI 도구를 활용하여 제작되었습니다.",
+        ]
+        return {
+            "title": title,
+            "description": "\n".join(desc_parts),
+            "tags": seo_tags,
+            "hashtags": hashtags,
+            "category": "22",
+        }
+
+
+# ============================================================================
 # 메인 파이프라인 - 영상 1개 완벽 생성
 # ============================================================================
-def make_one_perfect_short():
+def make_one_perfect_short(
+    upload: bool = False,
+    scheduled: bool = False,
+    video_index: int = 0,
+    keep_temp: bool = True,
+):
     """
     youshorts 완벽한 영상 1개 생성 파이프라인
 
-    1. 트렌드 수집 (Google+네이버+커뮤니티)
-    2. 뉴스 보강 (팩트 원료)
+    1. 트렌드 수집 (Google+네이버+커뮤니티+APIFY)
+    2. 본문 크롤링 / 뉴스 보강
     3. 대본 생성 (Gemini->OpenAI, 3회 재시도)
-    4. TTS 생성 (edge-tts + 단어별 타이밍)
+    4. TTS 생성 (edge→ElevenLabs→OpenAI 폴백)
+    4.5 오디오 마스터링 (-14 LUFS) + 속도 조절
     5. 자막 생성 (ASS 단어별 하이라이트)
     6. 렌더링 (FFmpeg: 배경+TTS+BGM+자막)
-    7. 이력 저장 (중복 방지)
+    7. 이력 저장 + 메타데이터 생성
+    8. YouTube 업로드 (선택)
     """
 
     start_time = time.time()
@@ -1365,7 +1573,7 @@ def make_one_perfect_short():
     # ── STEP 1.5: 본문 크롤링 (커뮤니티 게시글이면 URL에서 본문 수집) ──
     source_text = ""
     post_url = selected_trend.get("url", "")
-    if post_url and "community_" in selected_trend.get("source", ""):
+    if post_url and "community_" in str(selected_trend.get("source", "")):
         print(f"\n  본문 크롤링 시도: {post_url[:80]}...")
         source_text = trend_collector.fetch_post_body(post_url)
         if source_text:
@@ -1377,7 +1585,6 @@ def make_one_perfect_short():
     if not source_text:
         news_collector = NewsCollector()
         news = news_collector.collect_news(selected_topic)
-        # 뉴스 제목들을 source_text로 합침
         if news:
             source_text = "\n".join(
                 [f"- {n['title']}: {n.get('desc', '')}" for n in news[:5]]
@@ -1408,6 +1615,30 @@ def make_one_perfect_short():
         encoding="utf-8",
     )
 
+    # ── STEP 3.5: 오디오 마스터링 ──
+    print("\n" + "=" * 60)
+    print("STEP 3.5: 오디오 마스터링 (-14 LUFS)")
+    print("=" * 60)
+
+    mastered_mp3 = str(work_dir / "tts_mastered.mp3")
+    tts_mp3 = master_audio(tts_mp3, mastered_mp3)
+
+    # TTS 길이 체크 → 속도 조절
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", tts_mp3],
+            capture_output=True, text=True, timeout=10,
+        )
+        tts_duration = float(probe.stdout.strip())
+        if tts_duration > Config.MAX_DURATION:
+            speed = tts_duration / Config.MAX_DURATION
+            adjusted_mp3 = str(work_dir / "tts_adjusted.mp3")
+            tts_mp3 = adjust_audio_speed(tts_mp3, speed, adjusted_mp3)
+            print(f"  TTS {tts_duration:.1f}초 -> {Config.MAX_DURATION}초 (x{speed:.2f})")
+    except Exception:
+        pass
+
     # ── STEP 4: 자막 생성 ──
     print("\n" + "=" * 60)
     print("STEP 4: 단어별 하이라이트 자막 (ASS)")
@@ -1417,23 +1648,22 @@ def make_one_perfect_short():
     ass_file = str(work_dir / "subtitles.ass")
 
     if word_timings:
-        # 단어별 타이밍 있음 -> 진짜 워드 하이라이트
         subtitle_gen.generate_ass(word_timings, ass_file)
     else:
         # 한국어 edge-tts WordBoundary 미지원 -> 청크 기반 폴백
-        tts_duration = 40.0  # 기본값
+        _dur = 40.0
         try:
-            renderer = VideoRenderer()
-            tts_duration = renderer._get_video_duration(tts_mp3)
+            _r = VideoRenderer()
+            _dur = _r._get_video_duration(tts_mp3)
         except Exception:
             pass
         subtitle_gen.generate_ass_from_chunks(
-            script_data["tts_script"], tts_duration, ass_file
+            script_data["tts_script"], _dur, ass_file
         )
 
     # ── STEP 5: 렌더링 ──
     safe_title = re.sub(r'[\\/*?:"<>|()!\[\]{}]', '', script_data["title"])
-    safe_title = safe_title.replace(" ", "_")[:30]  # 최대 30자
+    safe_title = safe_title.replace(" ", "_")[:30]
     output_filename = f"shorts_{safe_title}_{timestamp}.mp4"
     output_mp4 = str(work_dir / output_filename)
 
@@ -1446,6 +1676,24 @@ def make_one_perfect_short():
     print("=" * 60)
     history.save(selected_topic, script_data["title"], final_video)
 
+    # ── STEP 7: 메타데이터 생성 ──
+    metadata = MetadataGenerator.generate(script_data)
+
+    # ── STEP 8: YouTube 업로드 (선택) ──
+    upload_url = None
+    if upload:
+        print("\n" + "=" * 60)
+        print("STEP 8: YouTube 업로드")
+        print("=" * 60)
+        uploader = YouTubeUploader()
+        url = uploader.upload(final_video, metadata)
+        if url:
+            upload_url = url
+
+    # ── 임시 파일 정리 ──
+    if not keep_temp:
+        _cleanup_temp(work_dir)
+
     # ── 완료 ──
     elapsed = time.time() - start_time
 
@@ -1456,16 +1704,37 @@ def make_one_perfect_short():
     print(f"  품질: {script_data.get('quality_score', 'N/A')}점")
     print(f"  소요시간: {elapsed:.1f}초")
     print(f"  태그: {', '.join(script_data.get('tags', []))}")
+    if upload_url:
+        print(f"  YouTube: {upload_url}")
     print("=" * 60)
 
     return {
         "video": final_video,
         "title": script_data["title"],
-        "description": script_data.get("description", ""),
-        "tags": script_data.get("tags", []),
+        "description": metadata.get("description", ""),
+        "tags": metadata.get("tags", []),
+        "hashtags": metadata.get("hashtags", []),
         "quality_score": script_data.get("quality_score", 0),
         "elapsed_seconds": elapsed,
+        "youtube_url": upload_url,
     }
+
+
+def _cleanup_temp(work_dir: Path):
+    """세션 폴더 내 임시 파일 정리."""
+    temp_exts = {".ass", ".json"}
+    removed = 0
+    for f in work_dir.iterdir():
+        if f.is_file() and f.suffix in temp_exts:
+            if f.name == "script.json":
+                continue
+            try:
+                f.unlink()
+                removed += 1
+            except Exception:
+                pass
+    if removed:
+        print(f"  [OK] 임시 파일 {removed}개 정리")
 
 
 # ============================================================================
@@ -1710,57 +1979,49 @@ class ApifyCrawler:
 
 
 # ============================================================================
-# 대량 생산 + CLI
+# 배치 생산 (--count N)
 # ============================================================================
-def mass_produce(count: int = 1, upload: bool = False, clean: bool = True):
-    """
-    영상 N개 대량 생산
-    사용법: python perfect_one_shot.py --count 3 --upload
-    """
+def batch_produce(
+    count: int = 3,
+    upload: bool = False,
+    scheduled: bool = False,
+    clean: bool = True,
+):
+    """영상 N개 연속 생산 (일일 한도 + 쿨다운 적용)."""
     print("\n" + "=" * 60)
-    print(f"  대량 생산 시작: {count}개, 업로드: {'ON' if upload else 'OFF'}")
+    print(f"  배치 생산 시작: {count}개, 업로드: {'ON' if upload else 'OFF'}")
     print("=" * 60)
 
-    uploader = YouTubeUploader() if upload else None
     results = []
-    success = 0
-    fail = 0
-
     for i in range(count):
+        # 일일 한도 체크
+        if not check_daily_limit():
+            print(f"\n  [STOP] 일일 한도 도달 — {i}개 생산 후 중단")
+            break
+
         print(f"\n{'='*60}")
-        print(f"  [{i+1}/{count}] 영상 생성 시작")
+        print(f"  [{i+1}/{count}] 영상 생산 중...")
         print(f"{'='*60}")
 
         try:
-            result = make_one_perfect_short()
+            result = make_one_perfect_short(
+                upload=upload,
+                scheduled=scheduled,
+                video_index=i,
+                keep_temp=False,
+            )
             results.append(result)
-            success += 1
+            print(f"\n  [OK] [{i+1}/{count}] 완료: {result['title']}")
 
-            # YouTube 업로드
-            if uploader:
-                print("\n" + "=" * 60)
-                print("STEP 7: YouTube 업로드")
-                print("=" * 60)
-                url = uploader.upload(
-                    result["video"],
-                    {
-                        "title": result["title"],
-                        "description": result["description"],
-                        "tags": result["tags"],
-                    },
-                )
-                if url:
-                    result["youtube_url"] = url
-
-            # 연속 생산 시 대기 (API 부하 방지)
+            # 다음 영상 전 쿨다운
             if i < count - 1:
-                wait = 30
-                print(f"\n  {wait}초 대기 후 다음 영상...")
-                time.sleep(wait)
+                cooldown = random.randint(10, 30)
+                print(f"  {cooldown}초 쿨다운...")
+                time.sleep(cooldown)
 
         except Exception as e:
-            print(f"\n  [ERROR] 영상 생성 실패: {e}")
-            fail += 1
+            print(f"\n  [ERROR] [{i+1}/{count}] 실패: {e}")
+            results.append({"error": str(e)})
 
     # 파일 정리
     if clean:
@@ -1770,12 +2031,14 @@ def mass_produce(count: int = 1, upload: bool = False, clean: bool = True):
         FileCleaner.clean_output()
 
     # 최종 요약
+    success = [r for r in results if "video" in r]
+    failed = [r for r in results if "error" in r]
+
     print("\n" + "=" * 60)
-    print(f"  대량 생산 완료!")
-    print(f"  성공: {success}개, 실패: {fail}개")
-    print(f"  성공률: {success/(success+fail)*100:.0f}%" if (success+fail) > 0 else "")
-    for r in results:
-        yt = r.get("youtube_url", "")
+    print(f"  배치 생산 완료!")
+    print(f"  성공: {len(success)}개, 실패: {len(failed)}개")
+    for r in success:
+        yt = r.get("youtube_url", "") or ""
         print(f"  - {r['title']} ({r.get('quality_score', '?')}점) {yt}")
     print("=" * 60)
 
@@ -1783,22 +2046,49 @@ def mass_produce(count: int = 1, upload: bool = False, clean: bool = True):
 
 
 # ============================================================================
-# 실행 (CLI)
+# CLI 인터페이스
 # ============================================================================
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="youshorts 영상 생성기")
-    parser.add_argument("--count", type=int, default=1, help="생성할 영상 수 (기본: 1)")
-    parser.add_argument("--upload", action="store_true", help="YouTube 자동 업로드")
-    parser.add_argument("--no-clean", action="store_true", help="파일 정리 스킵")
+    parser = argparse.ArgumentParser(
+        description="youshorts 올인원 숏츠 생성기",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+사용 예시:
+  python perfect_one_shot.py                    # 영상 1개 생성
+  python perfect_one_shot.py --count 3          # 3개 연속 생산
+  python perfect_one_shot.py --count 5 --upload # 5개 생산 + YouTube 업로드
+  python perfect_one_shot.py --upload --scheduled  # 예약 업로드 (4시간 간격)
+  python perfect_one_shot.py --keep-temp        # 임시파일 보관 (디버깅)
+        """,
+    )
+    parser.add_argument("--count", "-n", type=int, default=1,
+                        help="생산할 영상 개수 (기본: 1)")
+    parser.add_argument("--upload", "-u", action="store_true",
+                        help="YouTube 자동 업로드")
+    parser.add_argument("--scheduled", "-s", action="store_true",
+                        help="예약 업로드 (4시간 간격 공개)")
+    parser.add_argument("--keep-temp", action="store_true",
+                        help="임시 파일 보관 (디버깅용)")
+    parser.add_argument("--no-clean", action="store_true",
+                        help="비정상 파일 정리 스킵")
+    parser.add_argument("--max-daily", type=int, default=None,
+                        help=f"일일 최대 생산 개수 (기본: {Config.MAX_PER_DAY})")
     args = parser.parse_args()
 
-    if args.count == 1 and not args.upload:
-        result = make_one_perfect_short()
-    else:
-        mass_produce(
+    # 일일 한도 오버라이드
+    if args.max_daily is not None:
+        Config.MAX_PER_DAY = args.max_daily
+
+    if args.count > 1:
+        batch_produce(
             count=args.count,
             upload=args.upload,
+            scheduled=args.scheduled,
             clean=not args.no_clean,
+        )
+    else:
+        make_one_perfect_short(
+            upload=args.upload,
+            scheduled=args.scheduled,
+            keep_temp=args.keep_temp,
         )
