@@ -74,13 +74,13 @@ class Config:
     TTS_PITCH = "+0Hz"
 
     # ── 자막 ──
-    SUBTITLE_FONT = "Arial"
-    SUBTITLE_SIZE = 20
+    SUBTITLE_FONT = "Malgun Gothic"
+    SUBTITLE_SIZE = 62
     SUBTITLE_COLOR_NORMAL = "&H00FFFFFF"
     SUBTITLE_COLOR_HIGHLIGHT = "&H0000FFFF"
-    SUBTITLE_OUTLINE = 3
+    SUBTITLE_OUTLINE = 4
     SUBTITLE_SHADOW = 2
-    SUBTITLE_MARGIN_V = 120
+    SUBTITLE_MARGIN_V = 80
 
     # ── 품질 ──
     MIN_QUALITY_SCORE = 85
@@ -116,6 +116,9 @@ class Config:
         "재판", "판결", "구속", "기소", "검찰", "경찰", "수사",
         "피의자", "혐의", "체포", "송치",
         "국무회의", "예산", "법안", "조례", "감사원", "규제",
+        # 숏츠 부적합 (뉴스성/비바이럴)
+        "밥상", "명절", "설날", "추석", "시어머니", "며느리",
+        "택시", "심쿵", "로맨스", "연애", "고백",
     ]
 
     TOPIC_BOOST_KEYWORDS = [
@@ -444,10 +447,15 @@ class TrendCollector:
         if blocked:
             print(f"  [FILTER] 부적합 주제 {blocked}개 제거")
 
-        # ── 커뮤니티 소스 부스트 x2 ──
+        # ── Google Trends 점수 대폭 하향 (뉴스성 주제 억제) ──
+        for t in filtered:
+            if t.get("source") == "google_trends":
+                t["score"] = int(t["score"] * 0.3)
+
+        # ── 커뮤니티 소스 부스트 x5 (바이럴 우선) ──
         for t in filtered:
             if "community" in t.get("source", ""):
-                t["score"] = t["score"] * 2
+                t["score"] = t["score"] * 5
 
         # ── 부스트 키워드 보너스 ──
         for t in filtered:
@@ -455,6 +463,17 @@ class TrendCollector:
             boost_count = sum(1 for bk in Config.TOPIC_BOOST_KEYWORDS if bk in kw)
             if boost_count:
                 t["score"] += boost_count * 10000
+
+        # ── 부스트 매치 0인 Google Trends 제거 ──
+        pre_count = len(filtered)
+        filtered = [
+            t for t in filtered
+            if t.get("source") != "google_trends"
+            or any(bk in t["keyword"] for bk in Config.TOPIC_BOOST_KEYWORDS)
+        ]
+        gt_removed = pre_count - len(filtered)
+        if gt_removed:
+            print(f"  [FILTER] 부스트 미매치 Google Trends {gt_removed}개 제거")
 
         # ── 중복 키워드 합산 (URL/body 보존) ──
         merged = {}
@@ -1187,15 +1206,44 @@ class VideoRenderer:
         return _find_ffprobe_exe()
 
     def _get_background_video(self) -> Optional[str]:
+        """배경 영상 탐색: data/backgrounds/ 전체 스캔 → 없으면 그라디언트 자동 생성"""
         bg_dir = Config.BG_DIR
-        if not bg_dir.exists():
-            return None
-        videos = list(bg_dir.rglob("*.mp4"))
-        if not videos:
-            return None
-        selected = random.choice(videos)
-        print(f"  배경 선택: {selected.name}")
-        return str(selected)
+        videos = []
+        if bg_dir.exists():
+            videos = list(bg_dir.rglob("*.mp4"))
+        if videos:
+            selected = random.choice(videos)
+            print(f"  배경 선택: {selected.name}")
+            return str(selected)
+
+        # 배경 영상 없음 → FFmpeg 그라디언트 배경 자동 생성
+        print("  [WARN] 배경 영상 없음 → 그라디언트 배경 자동 생성")
+        temp_dir = Config.BASE_DIR / "temp"
+        temp_dir.mkdir(exist_ok=True)
+        gradient_mp4 = str(temp_dir / "gradient_bg.mp4")
+        try:
+            ffmpeg = self._find_ffmpeg()
+            # 어두운 보라(#1a0533) → 남색(#0a1628) 세로 그라디언트 + 느린 색상 순환
+            cmd = [
+                ffmpeg, "-y",
+                "-f", "lavfi", "-i",
+                (
+                    f"gradients=s={Config.WIDTH}x{Config.HEIGHT}:"
+                    f"c0=#1a0533:c1=#0a1628:"
+                    f"duration=65:speed=0.01:r={Config.FPS}"
+                ),
+                "-t", "65",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                gradient_mp4,
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            if result.returncode == 0 and os.path.exists(gradient_mp4):
+                print(f"  [OK] 그라디언트 배경 생성 완료")
+                return gradient_mp4
+        except Exception as e:
+            print(f"  [WARN] 그라디언트 생성 실패: {e}")
+
+        return None
 
     def _get_random_bgm(self) -> Optional[str]:
         bgm_dir = Config.BGM_DIR
