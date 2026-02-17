@@ -74,6 +74,18 @@ BACKGROUND_CATEGORIES: dict[str, list[str]] = {
     ],
 }
 
+# Pexels 1순위 배경 키워드 (영상마다 랜덤 카테고리 사용)
+PEXELS_RANDOM_CATEGORIES: list[str] = [
+    "cooking",
+    "food",
+    "street",
+    "city night",
+    "rain",
+    "ocean",
+    "fire",
+    "neon",
+]
+
 # Pexels 폴백용 범용 배경 키워드 (주제 무관, 항상 고품질 결과)
 UNIVERSAL_BACKGROUNDS: list[str] = [
     "city aerial night 4k",
@@ -573,10 +585,9 @@ def download_backgrounds(
     """배경 영상을 준비합니다.
 
     우선순위:
-    1. data/backgrounds/ 에서 기존 영상으로 클립 추출
-    2. yt-dlp로 새 배경 영상 다운로드 후 클립 추출
-    3. Pexels API 폴백
-    4. 그라데이션 배경 최후 폴백
+    1. Pexels API 랜덤 카테고리 (cooking, food, street, city night 등)
+    2. data/backgrounds/ 로컬 영상 폴백 (subway_surfers 등)
+    3. 그라데이션 배경 최후 폴백
 
     Args:
         keywords: 검색 키워드 리스트.
@@ -593,74 +604,84 @@ def download_backgrounds(
     ensure_dir(settings.temp_dir)
     target_duration = getattr(settings, "target_duration", 59)
 
-    # 1순위: data/backgrounds/ 에서 만족감 배경 클립 추출
-    clips = get_background_clips(
-        duration_seconds=target_duration,
-        count=count,
-        settings=settings,
-    )
-    if clips and len(clips) >= 3:
-        logger.info("만족감 배경 클립 %d개 준비 완료", len(clips))
-        return clips
+    # ── 1순위: Pexels API 랜덤 카테고리 ──
+    api_key = None
+    if settings.use_pexels:
+        api_key = SecretsManager.get_secret_value(settings.pexels_api_key)
 
-    # 2순위: Pexels API 폴백
-    logger.info("만족감 배경 부족 - Pexels 폴백 시도")
-    if not settings.use_pexels:
-        logger.info("Pexels 비활성화 - 그라데이션 배경 생성 (테마: %s)", bg_theme or "기본")
-        return _generate_gradient_fallbacks(count, settings, bg_theme=bg_theme)
-
-    api_key = SecretsManager.get_secret_value(settings.pexels_api_key)
-    if not api_key:
-        logger.warning("PEXELS_API_KEY 미설정 - 그라데이션 배경 사용")
-        return _generate_gradient_fallbacks(count, settings, bg_theme=bg_theme)
-
-    # 범용 배경 키워드 사용 (주제 무관하게 항상 고품질)
-    pexels_keywords = UNIVERSAL_BACKGROUNDS.copy()
-    random.shuffle(pexels_keywords)
-    logger.info("Pexels 범용 키워드: %s", pexels_keywords[:5])
+    if api_key:
+        # 매번 랜덤 카테고리 선택 (2~3개)
+        chosen_cats = random.sample(
+            PEXELS_RANDOM_CATEGORIES,
+            min(3, len(PEXELS_RANDOM_CATEGORIES)),
+        )
+        pexels_keywords = chosen_cats + random.sample(
+            UNIVERSAL_BACKGROUNDS, min(2, len(UNIVERSAL_BACKGROUNDS)),
+        )
+        random.shuffle(pexels_keywords)
+        logger.info("Pexels 1순위 카테고리: %s", pexels_keywords)
 
     downloaded: list[str] = []
-    for keyword in pexels_keywords:
-        if len(downloaded) >= count:
-            break
-        try:
-            videos = _search_pexels_videos(keyword, api_key, per_page=10)
-        except Exception as e:
-            logger.warning("Pexels 검색 오류 (%s): %s", keyword, e)
-            continue
 
-        for video in videos:
+    if api_key:
+        for keyword in pexels_keywords:
             if len(downloaded) >= count:
                 break
-            url = _get_best_video_url(video, min_width=1080)
-            if not url:
+            try:
+                videos = _search_pexels_videos(keyword, api_key, per_page=10)
+            except Exception as e:
+                logger.warning("Pexels 검색 오류 (%s): %s", keyword, e)
                 continue
-            filename = f"bg_{len(downloaded)}.mp4"
-            filepath = os.path.join(settings.temp_dir, filename)
-            if _download_file(url, filepath):
-                size_mb = os.path.getsize(filepath) / (1024 * 1024)
-                # 2MB 미만 저품질 영상 스킵
-                if size_mb < PEXELS_MIN_FILE_SIZE_MB:
-                    logger.info("  Pexels 스킵 (저품질): %s (%.1fMB < %.1fMB)", filename, size_mb, PEXELS_MIN_FILE_SIZE_MB)
-                    for attempt in range(3):
-                        try:
-                            os.remove(filepath)
-                            break
-                        except PermissionError:
-                            time.sleep(1)
-                    continue
-                logger.info("  Pexels 다운로드: %s (%.1fMB)", filename, size_mb)
-                if not _check_first_frame_brightness(filepath):
-                    for attempt in range(3):
-                        try:
-                            os.remove(filepath)
-                            break
-                        except PermissionError:
-                            time.sleep(1)
-                    continue
-                downloaded.append(filepath)
 
-    # 3순위: 그라데이션 폴백
+            for video in videos:
+                if len(downloaded) >= count:
+                    break
+                url = _get_best_video_url(video, min_width=1080)
+                if not url:
+                    continue
+                filename = f"bg_{len(downloaded)}.mp4"
+                filepath = os.path.join(settings.temp_dir, filename)
+                if _download_file(url, filepath):
+                    size_mb = os.path.getsize(filepath) / (1024 * 1024)
+                    # 2MB 미만 저품질 영상 스킵
+                    if size_mb < PEXELS_MIN_FILE_SIZE_MB:
+                        logger.info("  Pexels 스킵 (저품질): %s (%.1fMB < %.1fMB)", filename, size_mb, PEXELS_MIN_FILE_SIZE_MB)
+                        for attempt in range(3):
+                            try:
+                                os.remove(filepath)
+                                break
+                            except PermissionError:
+                                time.sleep(1)
+                        continue
+                    logger.info("  Pexels 다운로드: %s (%.1fMB)", filename, size_mb)
+                    if not _check_first_frame_brightness(filepath):
+                        for attempt in range(3):
+                            try:
+                                os.remove(filepath)
+                                break
+                            except PermissionError:
+                                time.sleep(1)
+                        continue
+                    downloaded.append(filepath)
+
+        if downloaded:
+            logger.info("Pexels 배경 %d개 다운로드 완료", len(downloaded))
+    else:
+        logger.info("Pexels API 키 없음 - 로컬 폴백으로 진행")
+
+    # ── 2순위: 로컬 data/backgrounds/ 폴백 (subway_surfers 등) ──
+    if len(downloaded) < 3:
+        logger.info("Pexels 부족 (%d개) - 로컬 배경 폴백 시도", len(downloaded))
+        clips = get_background_clips(
+            duration_seconds=target_duration,
+            count=count - len(downloaded),
+            settings=settings,
+        )
+        if clips:
+            logger.info("로컬 배경 클립 %d개 추가", len(clips))
+            downloaded.extend(clips)
+
+    # ── 3순위: 그라데이션 최후 폴백 ──
     if len(downloaded) < 3:
         logger.info("배경 영상 부족 (%d개) - 그라데이션 보충", len(downloaded))
         needed = max(count - len(downloaded), 3)
