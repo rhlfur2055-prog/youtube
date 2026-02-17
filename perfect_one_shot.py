@@ -933,12 +933,22 @@ class TTSEngine:
 # ============================================================================
 # STEP 3.5: 오디오 마스터링 (2-pass loudnorm, -14 LUFS)
 # ============================================================================
+def _find_ffmpeg_exe() -> str:
+    """imageio_ffmpeg 우선, 없으면 PATH의 ffmpeg."""
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        return "ffmpeg"
+
+
 def master_audio(input_path: str, output_path: str) -> str:
     """오디오 볼륨 정규화 + EQ. 2-pass loudnorm."""
+    ffmpeg = _find_ffmpeg_exe()
     try:
         # Pass 1: 현재 음량 측정
         measure_cmd = [
-            "ffmpeg", "-i", input_path,
+            ffmpeg, "-i", input_path,
             "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json",
             "-f", "null", "-",
         ]
@@ -959,7 +969,7 @@ def master_audio(input_path: str, output_path: str) -> str:
 
         # Pass 2: 정밀 정규화
         normalize_cmd = [
-            "ffmpeg", "-y", "-i", input_path,
+            ffmpeg, "-y", "-i", input_path,
             "-af", (
                 "highpass=f=80,"
                 "acompressor=threshold=-20dB:ratio=4:attack=5:release=50,"
@@ -979,7 +989,7 @@ def master_audio(input_path: str, output_path: str) -> str:
         # 1-pass 폴백
         try:
             fallback_cmd = [
-                "ffmpeg", "-y", "-i", input_path,
+                ffmpeg, "-y", "-i", input_path,
                 "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
                 "-ar", "44100", "-ac", "1",
                 output_path,
@@ -998,9 +1008,10 @@ def adjust_audio_speed(audio_path: str, speed_factor: float, output_path: str) -
     if abs(speed_factor - 1.0) < 0.01:
         return audio_path
 
+    ffmpeg = _find_ffmpeg_exe()
     try:
         cmd = [
-            "ffmpeg", "-y", "-i", audio_path,
+            ffmpeg, "-y", "-i", audio_path,
             "-filter:a", f"atempo={speed_factor:.4f}",
             "-vn", output_path,
         ]
@@ -1625,8 +1636,9 @@ def make_one_perfect_short(
 
     # TTS 길이 체크 → 속도 조절
     try:
+        ffprobe = _find_ffmpeg_exe().replace("ffmpeg", "ffprobe")
         probe = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            [ffprobe, "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", tts_mp3],
             capture_output=True, text=True, timeout=10,
         )
@@ -1683,10 +1695,14 @@ def make_one_perfect_short(
     upload_url = None
     if upload:
         print("\n" + "=" * 60)
-        print("STEP 8: YouTube 업로드")
+        mode = "예약 업로드" if scheduled else "즉시 업로드"
+        print(f"STEP 8: YouTube {mode}")
         print("=" * 60)
         uploader = YouTubeUploader()
-        url = uploader.upload(final_video, metadata)
+        if scheduled:
+            url = uploader.upload_scheduled(final_video, metadata, video_index)
+        else:
+            url = uploader.upload(final_video, metadata)
         if url:
             upload_url = url
 
@@ -1803,11 +1819,9 @@ class YouTubeUploader:
             print(f"  [ERROR] YouTube 인증 실패: {e}")
             return False
 
-    def upload(self, mp4_path: str, metadata: dict, privacy: str = "public") -> Optional[str]:
-        """영상 업로드 (3회 재시도, resumable)"""
-        if not self.service and not self.authenticate():
-            return None
-
+    def _build_body(self, metadata: dict, privacy: str = "public",
+                     publish_at: str = "") -> dict:
+        """YouTube API 요청 body 생성."""
         title = metadata.get("title", "쇼츠")[:46]
         if "#Shorts" not in title:
             title = f"{title} #Shorts"
@@ -1817,7 +1831,7 @@ class YouTubeUploader:
             description = f"{title}\n\n이 영상은 AI 도구를 활용하여 제작되었습니다."
         tags = metadata.get("tags", [])[:20]
 
-        body = {
+        body: dict = {
             "snippet": {
                 "title": title,
                 "description": description,
@@ -1830,6 +1844,16 @@ class YouTubeUploader:
                 "selfDeclaredMadeForKids": False,
             },
         }
+
+        # 예약 공개: private로 올리고 publishAt 설정
+        if publish_at and privacy == "private":
+            body["status"]["publishAt"] = publish_at
+
+        return body
+
+    def _do_upload(self, mp4_path: str, body: dict) -> Optional[str]:
+        """실제 업로드 실행 (3회 재시도)."""
+        title = body["snippet"]["title"]
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
@@ -1861,6 +1885,37 @@ class YouTubeUploader:
                     time.sleep(10)
 
         return None
+
+    def upload(self, mp4_path: str, metadata: dict, privacy: str = "public") -> Optional[str]:
+        """영상 즉시 업로드 (public)."""
+        if not self.service and not self.authenticate():
+            return None
+        body = self._build_body(metadata, privacy=privacy)
+        return self._do_upload(mp4_path, body)
+
+    def upload_scheduled(self, mp4_path: str, metadata: dict,
+                         video_index: int = 0) -> Optional[str]:
+        """예약 업로드: private로 올리고 4시간 간격 자동 공개.
+
+        video_index=0 → 다음날 09:00 UTC
+        video_index=1 → 다음날 13:00 UTC
+        video_index=2 → 다음날 17:00 UTC
+        """
+        if not self.service and not self.authenticate():
+            return None
+
+        # 공개 예약 시간 계산 (다음날 09:00 UTC + 4h * index)
+        tomorrow_9am = (
+            datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+            + timedelta(days=1)
+        )
+        publish_time = tomorrow_9am + timedelta(hours=4 * video_index)
+        publish_at = publish_time.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        print(f"  예약 공개: {publish_at} (영상 #{video_index + 1})")
+
+        body = self._build_body(metadata, privacy="private", publish_at=publish_at)
+        return self._do_upload(mp4_path, body)
 
 
 # ============================================================================
