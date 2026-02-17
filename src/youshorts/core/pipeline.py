@@ -152,6 +152,17 @@ class Pipeline:
         # 영상 생성 후: 비정상 파일 정리
         self._post_cleanup()
 
+        # ── 완료 요약 로그 ──
+        _title = self.result.script.get("title", "?") if self.result.script else "?"
+        _dur = self.result.actual_duration if hasattr(self.result, "actual_duration") else 0.0
+        _tts = self.result.script.get("tts_engine", "edge-tts") if self.result.script else "?"
+        _llm = self.result.script.get("llm_backend", "?") if self.result.script else "?"
+        _score = self.result.quality_score if hasattr(self.result, "quality_score") else 0
+        logger.info(
+            "=== 완료: 제목=%s, 품질=%d점, TTS=%s, LLM=%s ===",
+            _title, _score, _tts, _llm,
+        )
+
         set_pipeline_step("")
         return self.result
 
@@ -196,27 +207,79 @@ class Pipeline:
         self._step_done(1, total, "커뮤니티 크롤링 + 스크린샷")
 
     def _run_script_generation(self, total: int = 8) -> None:
-        """대본 생성."""
+        """대본 생성 (85점 미만 시 최대 3회 재생성)."""
+        import re as _re
+        import random as _random
         step = 2 if self.source_url else 1
         self._step(step, total, "대본 생성 중")
-        from youshorts.core.script_generator import generate_script
+        from youshorts.core.script_generator import generate_script, TRENDING_TOPICS
+        from youshorts.quality.quality_check import check_script_quality
 
-        # source_text: source_url 크롤링 결과 또는 community_crawler 결과
         effective_source_text = self.result.source_text or self.source_text
 
-        self.result.script = generate_script(
-            self.topic,
-            style=self.style,
-            source_text=effective_source_text,
-            settings=self.settings,
-        )
+        # ── 품질 체크 + 재생성 루프 (최대 3회) ──
+        best_script = None
+        best_score = 0
+
+        for attempt in range(1, 4):
+            script = generate_script(
+                self.topic,
+                style=self.style,
+                source_text=effective_source_text,
+                settings=self.settings,
+            )
+
+            # ── 대본 후처리 자동 정리 (AI 슬롭 제거) ──
+            tts = script.get("tts_script", "")
+            tts = tts.replace("**", "")
+            tts = _re.sub(r'여러분[의은는]?\s*', '', tts)
+            tts = _re.sub(r'어떻게 생각하시?나요\??', '', tts)
+            tts = _re.sub(r'의견을 남겨주세요\.?', '', tts)
+            tts = _re.sub(r'결론적으로,?\s*', '', tts)
+            tts = _re.sub(r'마무리하며,?\s*', '', tts)
+            # 한국인 이름 → "걔"로 치환
+            name_pfx = '김이박최정강조윤장임한오서신권황안송류홍'
+            tts = _re.sub(
+                rf'[{name_pfx}][가-힣]{{1,2}}(?=이|가|는|을|를|의|에게|한테|씨)',
+                '걔', tts,
+            )
+            script["tts_script"] = tts.strip()
+            script["full_script"] = script.get("full_script", "").replace("**", "")
+
+            score, issues, _ = check_script_quality(script, self.style)
+            logger.info("대본 품질: %d점 (시도 %d/3)", score, attempt)
+
+            if score > best_score:
+                best_script = script
+                best_score = score
+
+            if score >= 85:
+                break
+            logger.warning("품질 미달 (%d점) - 재생성 시도", score)
+
+        # 3회 후에도 85점 미만이면 폴백 주제
+        if best_score < 85 and TRENDING_TOPICS:
+            logger.warning("3회 시도 후에도 %d점 - 폴백 주제로 교체", best_score)
+            fallback = _random.choice(TRENDING_TOPICS)
+            try:
+                fb_script = generate_script(
+                    fallback["title"], self.style,
+                    fallback.get("body", ""), self.settings,
+                )
+                fb_score, _, _ = check_script_quality(fb_script, self.style)
+                if fb_score > best_score:
+                    best_script = fb_script
+                    best_score = fb_score
+                    logger.info("폴백 주제 사용: %s (%d점)", fallback["title"], fb_score)
+            except Exception as e:
+                logger.warning("폴백 재생성 실패: %s", e)
+
+        self.result.script = best_script
 
         logger.info("제목: %s", self.result.script["title"])
-        logger.info("독창적 관점: %s", self.result.script["unique_angle"])
-        logger.info("대본 길이: %d자", len(self.result.script["tts_script"]))
+        logger.info("대본 길이: %d자 (품질: %d점)", len(self.result.script["tts_script"]), best_score)
         logger.info("키워드: %s", ", ".join(self.result.script.get("keywords", [])))
 
-        # 다중 제목 로깅
         titles = self.result.script.get("youtube_titles", [])
         if titles:
             logger.info("YouTube 제목 후보: %d개", len(titles))

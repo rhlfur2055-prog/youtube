@@ -283,94 +283,91 @@ def get_background_clips(
     source_video = random.choice(available_videos)
     logger.info("배경 영상 소스: %s [%s]", source_video[0], os.path.basename(source_video[1]))
 
-    # MoviePy로 클립 추출
+    # FFmpeg로 클립 추출 (MoviePy 대비 메모리 절약 + 빠름)
     clips: list[str] = []
-    clip_duration = 5  # 각 클립 5초 (4~6초 범위)
+    clip_duration = 5  # 각 클립 5초
 
     try:
+        # ffprobe로 영상 길이 측정
         try:
-            from moviepy.editor import VideoFileClip
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
         except ImportError:
-            from moviepy import VideoFileClip
+            ffmpeg_exe = "ffmpeg"
 
-        video = VideoFileClip(source_video[1])
-        video_dur = video.duration
+        ffprobe_exe = ffmpeg_exe.replace("ffmpeg", "ffprobe") if "ffprobe" not in ffmpeg_exe else ffmpeg_exe
+        # ffprobe가 없으면 ffmpeg -i 로 폴백
+        video_path = source_video[1]
+        video_dur = 0.0
+
+        try:
+            probe_cmd = [
+                ffmpeg_exe, "-i", video_path,
+            ]
+            result = subprocess.run(
+                probe_cmd, capture_output=True, timeout=15,
+            )
+            stderr_text = result.stderr.decode("utf-8", errors="ignore")
+            import re as _re
+            dur_match = _re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", stderr_text)
+            if dur_match:
+                h, m, s = dur_match.groups()
+                video_dur = int(h) * 3600 + int(m) * 60 + float(s)
+        except Exception as dur_err:
+            logger.warning("ffmpeg 길이 측정 실패: %s", dur_err)
 
         if video_dur < 30:
-            logger.warning("배경 영상 너무 짧음 (%.1f초) - 전체 사용", video_dur)
+            logger.warning("배경 영상 짧음 (%.1f초) - 전체 복사 사용", video_dur)
             clip_path = os.path.join(settings.temp_dir, "bg_clip_0.mp4")
-            video.write_videofile(
-                clip_path, codec="libx264", audio=False,
-                preset="ultrafast", logger=None,
-            )
-            clips.append(clip_path)
-            video.close()
+            try:
+                subprocess.run(
+                    [ffmpeg_exe, "-y", "-i", video_path,
+                     "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:-1:-1",
+                     "-an", "-preset", "ultrafast", "-crf", "23", clip_path],
+                    capture_output=True, timeout=120,
+                )
+                clips.append(clip_path)
+            except Exception as e:
+                logger.warning("전체 복사 실패: %s", e)
             return clips
 
-        # 서로 다른 시작점에서 클립 추출 (겹치지 않게)
-        max_clips = int(video_dur / clip_duration) - 1
-        actual_count = min(count, max_clips, 15)  # 최대 15개
+        # 랜덤 시작점 기반 클립 추출 (같은 영상이어도 매번 다른 구간)
+        random_offset = random.randint(0, max(0, int(video_dur) - 70))
+        logger.info("배경 랜덤 시작점: %.1f초 (전체 %.1f초)", random_offset, video_dur)
 
-        # 균등 간격으로 시작점 계산 후 약간의 랜덤 오프셋 추가
-        interval = video_dur / (actual_count + 1)
-        start_points = []
-        for i in range(actual_count):
-            base = interval * (i + 1)
-            offset = random.uniform(-interval * 0.2, interval * 0.2)
-            start = max(0, min(base + offset, video_dur - clip_duration - 1))
-            start_points.append(start)
+        max_clips = int((video_dur - random_offset) / clip_duration) - 1
+        actual_count = min(count, max_clips, 15)
 
-        # 줌인/줌아웃 교차 적용을 위해 인덱스 전달
-        for idx, start in enumerate(start_points):
-            end = min(start + clip_duration, video_dur)
-            if end - start < 2:
-                continue
+        for idx in range(actual_count):
+            start = random_offset + (idx * clip_duration)
+            if start + clip_duration > video_dur:
+                break
 
             clip_path = os.path.join(settings.temp_dir, f"bg_clip_{idx}.mp4")
 
             try:
-                subclip = video.subclip(start, end)
+                cmd = [
+                    ffmpeg_exe, "-y",
+                    "-ss", f"{start:.2f}",
+                    "-i", video_path,
+                    "-t", str(clip_duration),
+                    "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:-1:-1",
+                    "-an", "-preset", "ultrafast", "-crf", "23",
+                    clip_path,
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=30)
 
-                # 세로형으로 크롭 (16:9 → 9:16)
-                vw, vh = subclip.w, subclip.h
-                target_ratio = 9 / 16
-                current_ratio = vw / vh
-
-                if current_ratio > target_ratio:
-                    # 가로가 더 넓음 → 좌우 크롭
-                    new_w = int(vh * target_ratio)
-                    x_center = vw // 2
-                    x1 = x_center - new_w // 2
-                    subclip = subclip.crop(x1=x1, x2=x1 + new_w)
-                elif current_ratio < target_ratio:
-                    # 세로가 더 넓음 → 상하 크롭
-                    new_h = int(vw / target_ratio)
-                    y_center = vh // 2
-                    y1 = y_center - new_h // 2
-                    subclip = subclip.crop(y1=y1, y2=y1 + new_h)
-
-                # 1080x1920 리사이즈
-                subclip = subclip.resize((1080, 1920))
-
-                subclip.write_videofile(
-                    clip_path, codec="libx264", audio=False,
-                    preset="ultrafast", logger=None,
-                    bitrate="5000k",
-                )
-                clips.append(clip_path)
-                subclip.close()
-
+                if os.path.exists(clip_path) and os.path.getsize(clip_path) > 1024:
+                    clips.append(clip_path)
+                else:
+                    logger.warning("클립 %d: 파일 크기 부족", idx)
             except Exception as e:
-                logger.warning("클립 %d 추출 실패: %s", idx, e)
-
-        video.close()
-        del video
-        gc.collect()
+                logger.warning("FFmpeg 클립 %d 추출 실패: %s", idx, e)
 
     except Exception as e:
         logger.error("배경 클립 추출 실패: %s", e)
 
-    logger.info("배경 클립 %d개 추출 완료 (카테고리: %s)", len(clips), source_video[0])
+    logger.info("배경 클립 %d개 추출 완료 (카테고리: %s, 랜덤시작)", len(clips), source_video[0])
     return clips
 
 
@@ -585,8 +582,8 @@ def download_backgrounds(
     """배경 영상을 준비합니다.
 
     우선순위:
-    1. Pexels API 랜덤 카테고리 (cooking, food, street, city night 등)
-    2. data/backgrounds/ 로컬 영상 폴백 (subway_surfers 등)
+    1. data/backgrounds/ 로컬 영상 (subway_surfers 등) + 랜덤 시작점
+    2. Pexels API 폴백
     3. 그라데이션 배경 최후 폴백
 
     Args:
@@ -604,26 +601,27 @@ def download_backgrounds(
     ensure_dir(settings.temp_dir)
     target_duration = getattr(settings, "target_duration", 59)
 
-    # ── 1순위: Pexels API 랜덤 카테고리 ──
+    # ── 1순위: 로컬 data/backgrounds/ (subway_surfers 등 + 랜덤 시작점) ──
+    clips = get_background_clips(
+        duration_seconds=target_duration,
+        count=count,
+        settings=settings,
+    )
+    if clips and len(clips) >= 3:
+        logger.info("로컬 배경 클립 %d개 준비 완료 (랜덤 시작점)", len(clips))
+        return clips
+
+    # ── 2순위: Pexels API 폴백 ──
+    downloaded: list[str] = []
     api_key = None
     if settings.use_pexels:
         api_key = SecretsManager.get_secret_value(settings.pexels_api_key)
 
     if api_key:
-        # 매번 랜덤 카테고리 선택 (2~3개)
-        chosen_cats = random.sample(
-            PEXELS_RANDOM_CATEGORIES,
-            min(3, len(PEXELS_RANDOM_CATEGORIES)),
-        )
-        pexels_keywords = chosen_cats + random.sample(
-            UNIVERSAL_BACKGROUNDS, min(2, len(UNIVERSAL_BACKGROUNDS)),
-        )
+        pexels_keywords = UNIVERSAL_BACKGROUNDS.copy()
         random.shuffle(pexels_keywords)
-        logger.info("Pexels 1순위 카테고리: %s", pexels_keywords)
+        logger.info("로컬 배경 부족 - Pexels 폴백 시도: %s", pexels_keywords[:3])
 
-    downloaded: list[str] = []
-
-    if api_key:
         for keyword in pexels_keywords:
             if len(downloaded) >= count:
                 break
@@ -643,9 +641,8 @@ def download_backgrounds(
                 filepath = os.path.join(settings.temp_dir, filename)
                 if _download_file(url, filepath):
                     size_mb = os.path.getsize(filepath) / (1024 * 1024)
-                    # 2MB 미만 저품질 영상 스킵
                     if size_mb < PEXELS_MIN_FILE_SIZE_MB:
-                        logger.info("  Pexels 스킵 (저품질): %s (%.1fMB < %.1fMB)", filename, size_mb, PEXELS_MIN_FILE_SIZE_MB)
+                        logger.info("  Pexels 스킵 (저품질): %s (%.1fMB)", filename, size_mb)
                         for attempt in range(3):
                             try:
                                 os.remove(filepath)
@@ -667,19 +664,7 @@ def download_backgrounds(
         if downloaded:
             logger.info("Pexels 배경 %d개 다운로드 완료", len(downloaded))
     else:
-        logger.info("Pexels API 키 없음 - 로컬 폴백으로 진행")
-
-    # ── 2순위: 로컬 data/backgrounds/ 폴백 (subway_surfers 등) ──
-    if len(downloaded) < 3:
-        logger.info("Pexels 부족 (%d개) - 로컬 배경 폴백 시도", len(downloaded))
-        clips = get_background_clips(
-            duration_seconds=target_duration,
-            count=count - len(downloaded),
-            settings=settings,
-        )
-        if clips:
-            logger.info("로컬 배경 클립 %d개 추가", len(clips))
-            downloaded.extend(clips)
+        logger.info("Pexels API 키 없음 / 비활성화")
 
     # ── 3순위: 그라데이션 최후 폴백 ──
     if len(downloaded) < 3:

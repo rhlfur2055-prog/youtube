@@ -17,76 +17,91 @@ logger = get_logger(__name__)
 
 def check_script_quality(
     script: dict[str, Any],
+    style: str = "community",
 ) -> tuple[int, list[str], list[str]]:
-    """대본 품질 점수를 계산합니다.
+    """대본 품질 점수를 계산합니다 (100점 만점 감점 방식).
 
     Args:
         script: 대본 딕셔너리.
+        style: 대본 스타일.
 
     Returns:
         (score, issues, suggestions).
     """
-    full_script = script.get("full_script", "")
+    text = script.get("tts_script", script.get("full_script", ""))
+    title = script.get("title", "")
     issues: list[str] = []
     suggestions: list[str] = []
     score = 100
 
-    # 1. 길이 체크
-    clean_text = re.sub(r'\[.*?\]', '', full_script).replace('*', '').strip()
-    char_count = len(clean_text.replace(' ', ''))
-    if char_count < 200:
-        issues.append(f"대본이 너무 짧습니다 ({char_count}자, 최소 200자)")
+    # ── 1. 길이 체크 ──
+    if len(text) < 150:
+        issues.append(f"대본 너무 짧음 ({len(text)}자 < 150자)")
         score -= 20
-    elif char_count > 400:
-        issues.append(f"대본이 너무 깁니다 ({char_count}자, 최대 400자)")
+    elif len(text) > 500:
+        issues.append(f"대본 너무 김 ({len(text)}자 > 500자)")
         score -= 10
 
-    # 2. 크리에이터 의견
-    opinion = script.get("creator_opinion", "")
-    if not opinion or len(opinion) < 20:
-        issues.append("크리에이터 개인 의견/분석이 부족합니다")
-        suggestions.append("'개인적으로...', '제가 분석해보니...' 등의 의견 추가 필요")
+    # ── 2. AI 슬롭 감점 (1개당 -15점) ──
+    ai_slop = [
+        '여러분', '선택은', '어떻게 생각', '경제학', '딜레마', '철학',
+        '마무리하며', '결론적으로', '요약하자면', '의견을', '남겨주세요',
+        '살펴보겠습니다', '흥미로운', '놀라운',
+    ]
+    for kw in ai_slop:
+        if kw in text:
+            issues.append(f"AI 슬롭 발견: '{kw}'")
+            score -= 15
+
+    # ── 3. 볼드체 잔존 ──
+    if '**' in text:
+        issues.append("볼드체(**) 잔존")
+        score -= 10
+
+    # ── 4. 사람 이름 감점 ──
+    name_prefixes = '김이박최정강조윤장임한오서신권황안송류홍'
+    names = re.findall(
+        rf'[{name_prefixes}][가-힣]{{1,2}}(?:이|가|는|을|를|의|에게|한테|씨)',
+        text,
+    )
+    if names:
+        issues.append(f"AI 생성 이름 발견: {names[:3]}")
+        score -= 20
+
+    # ── 5. 커뮤니티 말투 체크 ──
+    community_markers = ['ㅋㅋ', 'ㄷㄷ', 'ㄹㅇ', '실화', '레전드', '소름', '빡치', '개웃']
+    marker_count = sum(1 for m in community_markers if m in text)
+    if marker_count == 0:
+        issues.append("커뮤니티 말투 없음")
         score -= 15
 
-    # 3. 독창적 관점
-    angle = script.get("unique_angle", "")
-    if not angle:
-        issues.append("독창적 관점이 명시되지 않았습니다")
-        score -= 10
-
-    # 4. 출처
-    sources = script.get("fact_sources", [])
-    if not sources:
-        suggestions.append("통계/수치 인용 시 출처 추가 권장")
+    # ── 6. 첫 문장 체크 ──
+    first_sentence = text[:20]
+    good_starts = ['야', '아니', '실화', '이거', 'ㅋㅋ', '와', '헐']
+    if not any(s in first_sentence for s in good_starts):
+        suggestions.append("첫 문장에 '야/아니/실화' 등으로 시작 권장")
         score -= 5
 
-    # 5. 허위 정보 패턴
+    # ── 7. 마지막 문장 체크 ──
+    last_30 = text[-30:]
+    good_ends = ['ㅋㅋ', 'ㄷㄷ', '실화', '레전드', '소름', '말이 됨']
+    if not any(e in last_30 for e in good_ends):
+        suggestions.append("마지막에 'ㅋㅋ/ㄷㄷ/레전드' 등으로 마무리 권장")
+        score -= 5
+
+    # ── 8. 허위 정보 패턴 ──
     misleading_patterns = [
-        (r'100%\s*(확실|보장|효과)', "100% 보장 표현은 허위 정보 위험"),
-        (r'반드시\s*(치료|완치)', "의학적 보장 표현 주의"),
-        (r'(무조건|절대)\s*(돈|수익)', "금전적 보장 표현 주의"),
+        (r'100%\s*(확실|보장|효과)', "100% 보장 표현"),
+        (r'반드시\s*(치료|완치)', "의학적 보장 표현"),
+        (r'(무조건|절대)\s*(돈|수익)', "금전적 보장 표현"),
     ]
     for pattern, warning in misleading_patterns:
-        if re.search(pattern, full_script):
+        if re.search(pattern, text):
             issues.append(f"주의: {warning}")
             score -= 10
 
-    # 6. 숫자/데이터
-    numbers = re.findall(r'\d+', full_script)
-    if len(numbers) < 2:
-        suggestions.append("구체적인 숫자/데이터 추가 시 신뢰도 향상")
-        score -= 5
-
-    # 7. 스토리텔링 구조
-    has_hook = bool(script.get("hook"))
-    has_twist = bool(script.get("twist"))
-    has_conclusion = bool(script.get("conclusion"))
-    if not all([has_hook, has_twist, has_conclusion]):
-        issues.append("스토리텔링 구조(훅-반전-결론) 불완전")
-        score -= 15
-
-    # 8. 반복 문장
-    sentences = re.split(r'[.!?]', full_script)
+    # ── 9. 반복 문장 ──
+    sentences = re.split(r'[.!?]', text)
     seen: set[str] = set()
     for sent in sentences:
         clean = sent.strip()

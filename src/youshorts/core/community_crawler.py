@@ -1,11 +1,13 @@
 """실시간 커뮤니티 인기글 크롤링 모듈.
 
-네이트판, 에펨코리아, 더쿠, 네이버뉴스, Google Trends에서
-도파민 적합성이 높은 게시글을 직접 크롤링합니다.
+APIFY cheerio-scraper 1순위 + 직접 크롤링 2순위.
+네이트판, 에펨코리아, 더쿠, 인스티즈, 클리앙, 루리웹, 네이버뉴스, Google Trends에서
+도파민 적합성이 높은 게시글을 크롤링합니다.
 """
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import xml.etree.ElementTree as ET
@@ -17,6 +19,60 @@ from bs4 import BeautifulSoup
 from youshorts.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── APIFY cheerio-scraper 기반 크롤링 ──
+APIFY_SITES: list[tuple[str, str]] = [
+    ("에펨코리아", "https://www.fmkorea.com/index.php?mid=humor_best"),
+    ("인스티즈", "https://www.instiz.net/pt"),
+    ("더쿠", "https://theqoo.net/hot"),
+    ("클리앙", "https://www.clien.net/service/board/park"),
+    ("루리웹", "https://bbs.ruliweb.com/community/board/300143/best"),
+]
+
+
+def _crawl_with_apify(url: str, max_items: int = 20) -> list[dict[str, Any]]:
+    """APIFY cheerio-scraper로 커뮤니티 베스트글 크롤링."""
+    token = os.getenv("APIFY_API_TOKEN", "")
+    if not token:
+        return []
+
+    run_input = {
+        "startUrls": [{"url": url}],
+        "pageFunction": """
+        async function pageFunction(context) {
+            const $ = context.jQuery;
+            const results = [];
+            $('a.title, a.hotdeal_var8, .list-title a, .subject a, tr.symph_row a, .list_subject a, .title_wrapper a, h3.title a, .tit_area a').each(function() {
+                const title = $(this).text().trim();
+                if (title.length > 5) {
+                    results.push({
+                        title: title,
+                        url: $(this).attr('href') || '',
+                        body: title
+                    });
+                }
+            });
+            return results;
+        }
+        """,
+        "maxPagesPerCrawl": 1,
+        "maxRequestsPerCrawl": 3,
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.apify.com/v2/acts/apify~cheerio-scraper/run-sync-get-dataset-items",
+            params={"token": token},
+            json=run_input,
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            items = resp.json()
+            return items[:max_items]
+    except Exception as e:
+        logger.warning("APIFY 크롤링 실패 (%s): %s", url, e)
+    return []
 
 # ── 레퍼런스 채널급 폴백 주제 (크롤링 전부 실패 시) ──
 DOPAMINE_FALLBACK_TOPICS: list[dict[str, str]] = [
@@ -123,29 +179,49 @@ class CommunityCrawler:
     # ──────────────────────────────────────
 
     def fetch_all(self) -> list[dict[str, Any]]:
-        """모든 소스에서 인기글을 수집합니다. 실패한 소스는 스킵.
+        """모든 소스에서 인기글을 수집합니다. APIFY 1순위 + 직접크롤링 2순위.
 
         Returns:
             [{'title': str, 'body': str, 'source': str}, ...] 리스트.
         """
         posts: list[dict[str, Any]] = []
 
-        sources = [
-            ("네이트판", self._fetch_natepann),
-            ("에펨코리아", self._fetch_fmkorea),
-            ("더쿠", self._fetch_theqoo),
-            ("네이버뉴스", self._fetch_naver_news),
-            ("Google Trends", self._fetch_google_trends),
-        ]
+        # ── 1순위: APIFY 5개 사이트 크롤링 ──
+        apify_token = os.getenv("APIFY_API_TOKEN", "")
+        if apify_token:
+            for site_name, url in APIFY_SITES:
+                try:
+                    items = _crawl_with_apify(url, max_items=10)
+                    for item in items:
+                        posts.append({
+                            "title": item.get("title", ""),
+                            "body": item.get("body", item.get("title", "")),
+                            "source": site_name,
+                        })
+                    logger.info("[APIFY] %s: %d개", site_name, len(items))
+                except Exception as e:
+                    logger.warning("[APIFY 실패] %s: %s", site_name, e)
+        else:
+            logger.info("[APIFY] 토큰 없음 - 직접 크롤링으로 진행")
 
-        for name, fetcher in sources:
-            try:
-                result = fetcher()
-                posts.extend(result)
-                logger.info("[크롤링] %s: %d개", name, len(result))
-            except Exception as e:
-                logger.warning("[크롤링 실패] %s: %s", name, e)
-                continue
+        # ── 2순위: 직접 크롤링 (APIFY 부족 시) ──
+        if len(posts) < 10:
+            sources = [
+                ("네이트판", self._fetch_natepann),
+                ("에펨코리아", self._fetch_fmkorea),
+                ("더쿠", self._fetch_theqoo),
+                ("네이버뉴스", self._fetch_naver_news),
+                ("Google Trends", self._fetch_google_trends),
+            ]
+
+            for name, fetcher in sources:
+                try:
+                    result = fetcher()
+                    posts.extend(result)
+                    logger.info("[크롤링] %s: %d개", name, len(result))
+                except Exception as e:
+                    logger.warning("[크롤링 실패] %s: %s", name, e)
+                    continue
 
         # 중복 제거
         seen: set[str] = set()
@@ -155,7 +231,7 @@ class CommunityCrawler:
                 seen.add(p["title"])
                 unique.append(p)
 
-        logger.info("[크롤링] 총 %d개 수집", len(unique))
+        logger.info("[크롤링] 총 %d개 수집 (APIFY+직접)", len(unique))
         return unique
 
     def pick_best(self, count: int = 1) -> list[dict[str, Any]]:
