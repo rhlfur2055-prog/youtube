@@ -69,7 +69,7 @@ class Config:
     MAX_DURATION = 59  # 숏츠 제한 60초 미만
 
     # ── TTS ──
-    TTS_VOICE = "ko-KR-SunHiNeural"
+    TTS_VOICE = "ko-KR-InJoonNeural"  # 남성 음성 (SunHi=여성→InJoon=남성)
     TTS_RATE = "+10%"
     TTS_PITCH = "+0Hz"
 
@@ -110,27 +110,41 @@ class Config:
 
     # ── 주제 필터 ──
     TOPIC_BLACKLIST = [
+        # 정치 (은어/비속어 포함)
         "국회", "대통령", "탄핵", "여당", "야당", "민주당", "국민의힘",
         "총선", "선거", "후보", "정당", "의원", "청와대", "정부",
         "외교", "북한", "한미", "정상회담", "국방", "안보",
+        "친노", "친문", "친윤", "좌파", "우파", "진보", "보수",
+        "이재명", "윤석열", "한동훈", "이낙연", "손학규",
+        "똥파리", "손가혁", "문빠", "윤빠", "국짐", "민짜",
+        "핵협상", "속보", "긴급",
+        # 경제
         "금리", "환율", "증시", "코스피", "코스닥", "주가", "GDP",
         "물가", "인플레이션", "기준금리", "한은", "국채",
+        # 사건사고
         "사망", "사고", "화재", "지진", "태풍", "폭발", "추모",
         "유족", "희생", "참사", "실종", "붕괴",
+        # 법률
         "재판", "판결", "구속", "기소", "검찰", "경찰", "수사",
         "피의자", "혐의", "체포", "송치",
+        # 행정
         "국무회의", "예산", "법안", "조례", "감사원", "규제",
-        # 숏츠 부적합 (뉴스성/비바이럴)
+        # 커뮤니티 잡글 (공지/광고/모집/질문)
+        "공지", "통합", "체험단", "모집", "이벤트", "광고", "제휴",
+        "스포", "질문드립니다", "질문있습니다", "문의", "안내",
+        # 숏츠 부적합
         "밥상", "명절", "설날", "추석", "시어머니", "며느리",
         "택시", "심쿵", "로맨스", "연애", "고백",
     ]
 
+    # 바이럴 신호 키워드 (브랜드명 제거, 반응/감정/행동 키워드 위주)
     TOPIC_BOOST_KEYWORDS = [
-        "ㅋㅋ", "레전드", "실화", "대박", "미쳤", "소름", "충격",
-        "반전", "꿀팁", "신상", "후기", "맛집", "먹방", "게임",
-        "연예인", "아이돌", "드라마", "영화", "웹툰", "짤",
-        "밈", "챌린지", "브이로그", "꿀조합", "편의점",
-        "카페", "맥도날드", "스타벅스", "올리브영", "다이소",
+        "레전드", "실화", "대박", "미쳤", "소름", "논란",
+        "반전", "후기", "먹방", "게임", "리뷰",
+        "아이돌", "드라마", "영화", "웹툰",
+        "밈", "챌린지", "핫", "터짐", "난리",
+        "비교", "랭킹", "순위", "VS", "TOP",
+        "꿀팁", "해봄", "써봄", "사봄", "가봄",
     ]
 
     # ── 주제별 배경 모드 ──
@@ -143,12 +157,12 @@ class Config:
         ],
     }
 
-    # 주제 키워드 → 그라디언트 색상 (상단→하단, 진한 톤 + 자막 가독성)
+    # 주제 키워드 → 그라디언트 색상 (상단→하단, 어둡지만 확실히 색감 보이는 톤)
     GRADIENT_COLORS: dict[str, tuple[str, str]] = {
-        "food":    ("#8B2500", "#FF6B35"),  # 짙은 레드 → 오렌지
-        "beauty":  ("#4A0E4E", "#C850C0"),  # 딥퍼플 → 핫핑크
-        "info":    ("#0D1B2A", "#1B4965"),  # 네이비 → 틸블루
-        "default": ("#1A1A2E", "#16213E"),  # 다크네이비 → 미드나잇블루
+        "food":    ("#1C1C1C", "#3D2B1F"),  # 차콜 → 다크브라운 (따뜻한 톤)
+        "beauty":  ("#1C1C1C", "#2D2D3F"),  # 차콜 → 다크슬레이트 (차가운 톤)
+        "info":    ("#1C1C1C", "#1A2A3A"),  # 차콜 → 다크네이비
+        "default": ("#1C1C1C", "#2A2A2A"),  # 차콜 → 다크그레이 (무채색)
     }
     GRADIENT_TOPIC_MAP: dict[str, list[str]] = {
         "food":   ["맛집", "편의점", "음식", "요리", "레시피", "먹방", "꿀조합", "카페", "맥도날드", "스타벅스"],
@@ -268,7 +282,7 @@ class TrendCollector:
             root = ET.fromstring(resp.text)
             ns = {"ht": "https://trends.google.co.kr/trending/rss"}
 
-            for item in root.findall(".//item"):
+            for idx, item in enumerate(root.findall(".//item")):
                 title = item.find("title")
                 if title is not None and title.text:
                     traffic = item.find("ht:approx_traffic", ns)
@@ -277,6 +291,9 @@ class TrendCollector:
                         traffic_num = int(
                             traffic.text.replace(",", "").replace("+", "")
                         )
+                    # traffic 값 없으면 순위 기반 기본점수 (실검이니 최소 10,000)
+                    if traffic_num == 0:
+                        traffic_num = max(50000 - idx * 3000, 10000)
                     results.append({
                         "keyword": title.text.strip(),
                         "source": "google_trends",
@@ -290,51 +307,65 @@ class TrendCollector:
 
         return results
 
-    def fetch_naver_signal(self) -> list[dict]:
-        """네이버 데이터랩 시그널 - 한국인 실시간 관심사"""
+    def fetch_naver_realtime(self) -> list[dict]:
+        """네이버 실시간 급상승 검색어 (연관검색어 API 활용)"""
         import requests
         from bs4 import BeautifulSoup
 
         results = []
 
+        # 1) 네이버 모바일 메인 급상승 검색어
         try:
-            url = "https://datalab.naver.com/keyword/realtimeList.naver"
+            url = "https://m.search.naver.com/search.naver?query=%EC%8B%A4%EC%8B%9C%EA%B0%84+%EA%B8%89%EC%83%81%EC%8A%B9"
             resp = requests.get(url, timeout=5, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 Chrome/120.0.0.0",
-                "Referer": "https://datalab.naver.com/",
+                "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-S908B) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36",
             })
-
             if resp.status_code == 200:
                 soup = BeautifulSoup(resp.text, "html.parser")
-                selectors = [
-                    "span.item_title", ".ranking_item .title", "a.link_text",
-                ]
-                items = []
-                for sel in selectors:
-                    items = soup.select(sel)
-                    if items:
-                        break
-
-                for i, item in enumerate(items[:20]):
+                # 급상승 검색어 항목
+                items = soup.select(".lst_relate .item") or soup.select("a.keyword")
+                for i, item in enumerate(items[:15]):
                     text = item.get_text(strip=True)
                     if text and len(text) > 1:
                         results.append({
                             "keyword": text,
-                            "source": "naver_signal",
-                            "score": (20 - i) * 5000,
+                            "source": "naver_realtime",
+                            "score": (15 - i) * 5000,
                         })
-                print(f"  [OK] 네이버 시그널: {len(results)}개 수집")
-            else:
-                print(f"  [WARN] 네이버 시그널: HTTP {resp.status_code}")
+        except Exception:
+            pass
 
-        except Exception as e:
-            print(f"  [WARN] 네이버 시그널 실패: {e}")
+        # 2) 네이버 쇼핑 인기 검색어 (소비 트렌드 = 쇼츠 주제 적합)
+        try:
+            url2 = "https://search.shopping.naver.com/search/all?query=%EC%9D%B8%EA%B8%B0&sort=rel"
+            resp2 = requests.get(url2, timeout=5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0",
+            })
+            if resp2.status_code == 200:
+                soup2 = BeautifulSoup(resp2.text, "html.parser")
+                items2 = soup2.select(".relateKeyword_relation_item__key") or []
+                for i, item in enumerate(items2[:10]):
+                    text = item.get_text(strip=True)
+                    if text and len(text) > 1:
+                        results.append({
+                            "keyword": text,
+                            "source": "naver_shopping",
+                            "score": (10 - i) * 4000,
+                        })
+        except Exception:
+            pass
+
+        if results:
+            print(f"  [OK] 네이버 실시간: {len(results)}개 수집")
+        else:
+            print(f"  [WARN] 네이버 실시간 수집 실패")
 
         return results
 
     def fetch_community_hot(self) -> list[dict]:
-        """에펨코리아/인스티즈/네이트판 실시간 베스트 — 본문 URL 포함"""
+        """커뮤니티 실시간 베스트 — 봇차단 없는 사이트 위주"""
         import requests
         from bs4 import BeautifulSoup
 
@@ -347,16 +378,22 @@ class TrendCollector:
                 "base_url": "https://pann.nate.com",
             },
             {
-                "name": "에펨코리아",
-                "url": "https://www.fmkorea.com/index.php?mid=best&listStyle=list",
-                "title_sel": ".title a",
-                "base_url": "https://www.fmkorea.com",
+                "name": "클리앙",
+                "url": "https://www.clien.net/service/board/park",
+                "title_sel": ".list_subject .subject_fixed",
+                "base_url": "https://www.clien.net",
             },
             {
-                "name": "인스티즈",
-                "url": "https://www.instiz.net/pt",
-                "title_sel": ".listsubject a",
-                "base_url": "https://www.instiz.net",
+                "name": "루리웹",
+                "url": "https://bbs.ruliweb.com/community/board/300143/best",
+                "title_sel": ".subject .deco",
+                "base_url": "https://bbs.ruliweb.com",
+            },
+            {
+                "name": "더쿠",
+                "url": "https://theqoo.net/hot",
+                "title_sel": ".tit_topic a, .title a",
+                "base_url": "https://theqoo.net",
             },
         ]
 
@@ -451,7 +488,7 @@ class TrendCollector:
 
         all_trends = []
         all_trends.extend(self.fetch_google_trends_rss())
-        all_trends.extend(self.fetch_naver_signal())
+        all_trends.extend(self.fetch_naver_realtime())
         all_trends.extend(self.fetch_community_hot())
 
         # APIFY 크롤러 (토큰 있으면 자동 추가)
@@ -460,47 +497,60 @@ class TrendCollector:
             all_trends.extend(apify_results)
             print(f"  [OK] APIFY: {len(apify_results)}개 추가")
 
-        # ── 블랙리스트 필터링 ──
+        # ── 블랙리스트 + 영어/짧은 제목 필터링 ──
         filtered = []
         blocked = 0
         for t in all_trends:
             kw = t["keyword"]
-            is_blocked = any(bw in kw for bw in Config.TOPIC_BLACKLIST)
-            if is_blocked:
+            # 블랙리스트
+            if any(bw in kw for bw in Config.TOPIC_BLACKLIST):
+                blocked += 1
+                continue
+            # 영어 비율 50% 이상이면 제거 (한국어 쇼츠에 부적합)
+            eng_chars = sum(1 for c in kw if c.isascii() and c.isalpha())
+            if len(kw) > 3 and eng_chars / len(kw) > 0.5:
+                blocked += 1
+                continue
+            # 너무 짧은 키워드 (2글자 이하) 제거
+            clean_kw = re.sub(r'[^가-힣a-zA-Z0-9]', '', kw)
+            if len(clean_kw) < 3:
                 blocked += 1
                 continue
             filtered.append(t)
 
         if blocked:
-            print(f"  [FILTER] 부적합 주제 {blocked}개 제거")
+            print(f"  [FILTER] 블랙리스트 {blocked}개 제거")
 
-        # ── Google Trends 점수 대폭 하향 (뉴스성 주제 억제) ──
+        # ── 커뮤니티 잡글 필터 (질문/공지/짧은 제목 제거) ──
+        junk_patterns = ["?", "질문", "뭘까", "어떻게", "하는건가", "드립니다",
+                         "📢", "중요", "변경 권장", "규칙", "카테고리"]
+        pre_junk = len(filtered)
+        filtered = [
+            t for t in filtered
+            if not ("community" in t.get("source", "")
+                    and (len(t["keyword"]) < 10
+                         or any(jp in t["keyword"] for jp in junk_patterns)))
+        ]
+        junk_removed = pre_junk - len(filtered)
+        if junk_removed:
+            print(f"  [FILTER] 커뮤니티 잡글 {junk_removed}개 제거")
+
+        # ── 점수 재조정 ──
+        # Google Trends: 실제 검색량 기반이므로 가장 신뢰도 높음
+        # 커뮤니티: 게시판 글 순서 기반, 쇼츠 적합성 불확실
         for t in filtered:
-            if t.get("source") == "google_trends":
-                t["score"] = int(t["score"] * 0.3)
+            src = t.get("source", "")
+            if src == "google_trends":
+                pass  # 기본 점수 유지
+            elif "community" in src:
+                t["score"] = int(t["score"] * 1.5)  # 약한 부스트만
 
-        # ── 커뮤니티 소스 부스트 x5 (바이럴 우선) ──
-        for t in filtered:
-            if "community" in t.get("source", ""):
-                t["score"] = t["score"] * 5
-
-        # ── 부스트 키워드 보너스 ──
+        # ── 부스트 키워드 보너스 (어느 소스든 적용) ──
         for t in filtered:
             kw = t["keyword"]
             boost_count = sum(1 for bk in Config.TOPIC_BOOST_KEYWORDS if bk in kw)
             if boost_count:
-                t["score"] += boost_count * 10000
-
-        # ── 부스트 매치 0인 Google Trends 제거 ──
-        pre_count = len(filtered)
-        filtered = [
-            t for t in filtered
-            if t.get("source") != "google_trends"
-            or any(bk in t["keyword"] for bk in Config.TOPIC_BOOST_KEYWORDS)
-        ]
-        gt_removed = pre_count - len(filtered)
-        if gt_removed:
-            print(f"  [FILTER] 부스트 미매치 Google Trends {gt_removed}개 제거")
+                t["score"] += boost_count * 20000
 
         # ── 중복 키워드 합산 (URL/body 보존) ──
         merged = {}
@@ -604,103 +654,71 @@ class ScriptGenerator:
     """
 
     # ── 원글 있을 때: 팩트 기반 나레이션 ──
-    PROMPT_WITH_SOURCE = """너는 유튜브 쇼츠 나레이터야. 20대 남성, 인터넷 커뮤니티 말투.
+    PROMPT_WITH_SOURCE = """유튜브 쇼츠 나레이션 대본을 만들어.
 
-[원글 내용]을 기반으로 쇼츠 대본을 작성해.
+역할: 20대 한국 남자가 친구한테 얘기하듯이 말하는 느낌.
 
-핵심 규칙:
-1. 원글 팩트를 80% 이상 포함. 없는 내용 지어내지 마.
-2. 문장당 8~15자로 짧게 끊어. 한 문장에 한 가지 팩트만.
-3. 총 18~25문장. 전체 250~350자.
-4. 말투: "~함", "~임", "~인듯", "~ㅋㅋ", "~ㄷㄷ" 등 자연스러운 반말.
-5. "여러분", 실명, **볼드**, 이모지 전부 금지.
+규칙:
+1. [원글 내용]의 핵심 팩트를 전달해. 없는 내용 지어내지 마.
+2. 문장 길이는 자유롭게 — 짧은 것(5자)도 긴 것(25자)도 섞어서 리듬감 있게.
+3. 전체 15~22문장. 250~400자.
+4. 첫 문장은 주제를 바로 꺼내. 훅 잡는 질문이나 핵심 팩트로 시작.
+5. 마지막은 자연스럽게 끝내. 억지 구독유도 하지 마.
+6. 금지: "여러분", 실명, **볼드**, 이모지, "구독", "좋아요"
 
-첫 문장 (아래 중 랜덤 택1):
-- "야 이거 실화임?"
-- "아니 이게 말이 돼?"
-- "ㅋㅋㅋ 미쳤다 진짜"
-- "와 이건 좀 소름인데"
-- "아 진짜 웃기네ㅋㅋ"
-- "역대급 나왔다 ㄷㄷ"
-- "이거 모르면 손해임"
-- "핵꿀팁 발견했다"
+말투 참고 (이걸 그대로 쓰지 말고 자연스럽게 변형해):
+- 놀랄 때: "이게 진짜?", "아 이건 좀...", "와 미쳤는데"
+- 설명할 때: "근데 이게", "진짜 웃긴 게", "포인트는"
+- 마무리: "이 정도면 해볼 만하지", "한번 써봐", "알아서 판단"
 
-마지막 문장 (아래 중 랜덤 택1):
-- "ㄹㅇ 레전드ㅋㅋ"
-- "소름돋음ㄷㄷ"
-- "진짜 미쳤다ㅋㅋㅋ"
-- "안 해본 사람 없게 해주세요"
-- "댓글로 알려줘 ㄱㄱ"
-- "구독 박고 가자"
-- "이거 저장 필수임"
-- "다음편 궁금하면 구독 ㄱ"
-
-절대 쓰지 말 것 (AI 슬롭):
+절대 쓰지 말 것:
 {slop_words}
 
-[주제]
-{topic}
+[주제] {topic}
 
 [원글 내용]
 {source_text}
 
-출력 형식 (반드시 JSON만 출력, 설명 붙이지 마):
+JSON만 출력:
 {{
-  "title": "숏츠 제목 (15자 이내, 이모지 금지, ㅋㅋ/ㄷㄷ 가능)",
-  "tts_script": "줄바꿈(\\n)으로 구분된 대본 전문",
+  "title": "제목 15자 이내 (이모지 금지)",
+  "tts_script": "줄바꿈으로 구분된 대본",
   "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
-  "description": "유튜브 설명란 2줄 (호기심 유발)"
+  "description": "설명란 2줄"
 }}"""
 
     # ── 원글 없을 때: 주제 기반 정보형 대본 ──
-    PROMPT_NO_SOURCE = """너는 유튜브 쇼츠 나레이터야. 20대 남성, 인터넷 커뮤니티 말투.
+    PROMPT_NO_SOURCE = """유튜브 쇼츠 나레이션 대본을 만들어.
 
-아래 [주제]에 대해 사람들이 궁금해할 만한 정보를 쇼츠 대본으로 만들어.
+역할: 20대 한국 남자가 특정 주제에 대해 알려주는 느낌. 정보 전달형.
 
-핵심 규칙:
-1. 널리 알려진 사실만 사용. 확인 안 된 건 "~라고 함", "~이라는 말 있음" 표현.
-2. 문장당 8~15자로 짧게 끊어. 한 문장에 한 가지 정보만.
-3. 총 18~25문장. 전체 250~350자.
-4. 말투: "~함", "~임", "~인듯", "~ㅋㅋ", "~ㄷㄷ" 등 자연스러운 반말.
-5. "여러분", 실명, **볼드**, 이모지 전부 금지.
-6. 구체적인 숫자, 비교, 꿀팁을 넣어서 정보 밀도를 높여.
-7. 뻔한 상식 나열 금지. 의외성 있는 팩트 위주로.
+규칙:
+1. [주제]에 대해 사람들이 몰랐을 법한 구체적 정보를 전달해.
+2. 뻔한 상식 나열 금지. 의외의 팩트, 숫자 비교, 실제 경험담 위주.
+3. 확실하지 않은 건 "~라는 말이 있음", "~라고 하더라" 식으로 표현.
+4. 문장 길이 자유 — 짧은 것도 긴 것도 섞어서 리듬감 있게.
+5. 전체 15~22문장. 250~400자.
+6. 첫 문장은 주제의 핵심을 바로 꺼내. 질문형이나 의외의 사실로 시작.
+7. 마지막은 자연스럽게 끝내. "구독해" 같은 CTA 하지 마.
+8. 금지: "여러분", 실명, **볼드**, 이모지, "구독", "좋아요"
 
-첫 문장 (아래 중 랜덤 택1):
-- "야 이거 실화임?"
-- "아니 이게 말이 돼?"
-- "ㅋㅋㅋ 미쳤다 진짜"
-- "와 이건 좀 소름인데"
-- "이거 모르면 손해임"
-- "핵꿀팁 발견했다"
-- "역대급 나왔다 ㄷㄷ"
-- "몰랐으면 진짜 큰일남"
+말투: 친구한테 얘기하듯이 편하게. 억지로 인터넷 용어 넣지 마.
+자연스러우면 "ㅋㅋ"나 "ㄷㄷ" 써도 되지만 매 문장마다 쓰지 마.
 
-마지막 문장 (아래 중 랜덤 택1):
-- "ㄹㅇ 레전드ㅋㅋ"
-- "소름돋음ㄷㄷ"
-- "진짜 미쳤다ㅋㅋㅋ"
-- "안 해본 사람 없게 해주세요"
-- "댓글로 알려줘 ㄱㄱ"
-- "이거 저장 필수임"
-- "다음편 궁금하면 구독 ㄱ"
-- "공유 안 하면 손해임"
-
-절대 쓰지 말 것 (AI 슬롭):
+절대 쓰지 말 것:
 {slop_words}
 
-[주제]
-{topic}
+[주제] {topic}
 
-[뉴스 헤드라인 참고]
+[참고 헤드라인]
 {source_text}
 
-출력 형식 (반드시 JSON만 출력, 설명 붙이지 마):
+JSON만 출력:
 {{
-  "title": "숏츠 제목 (15자 이내, 이모지 금지, ㅋㅋ/ㄷㄷ 가능)",
-  "tts_script": "줄바꿈(\\n)으로 구분된 대본 전문",
+  "title": "제목 15자 이내 (이모지 금지)",
+  "tts_script": "줄바꿈으로 구분된 대본",
   "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
-  "description": "유튜브 설명란 2줄 (호기심 유발)"
+  "description": "설명란 2줄"
 }}"""
 
     def _build_prompt(self, topic: str, source_text: str) -> str:
@@ -830,11 +848,14 @@ class ScriptGenerator:
             score -= 10
             reasons.append(f"문장 과다 ({len(sentences)}문장)")
 
-        # 문장 길이 균일성 체크 (15자 초과 문장 비율)
-        long_sentences = [s for s in sentences if len(s) > 18]
-        if len(long_sentences) > len(sentences) * 0.3:
-            score -= 10
-            reasons.append(f"긴 문장 {len(long_sentences)}개 (15자 초과)")
+        # 문장 길이 다양성 체크 (전부 비슷한 길이면 감점)
+        if sentences:
+            lens = [len(s) for s in sentences]
+            avg_len = sum(lens) / len(lens)
+            variance = sum((l - avg_len) ** 2 for l in lens) / len(lens)
+            if variance < 5:  # 분산이 너무 낮으면 = 전부 비슷한 길이
+                score -= 10
+                reasons.append("문장 길이가 너무 균일 (리듬감 부족)")
 
         # AI 슬롭 체크
         slop_found = 0
@@ -873,16 +894,12 @@ class ScriptGenerator:
             score -= 10
             reasons.append("이모지 포함")
 
-        # 커뮤니티 말투 체크 (보너스)
-        comm_markers = ["ㅋㅋ", "ㄹㅇ", "ㄷㄷ", "야 ", "실화", "미쳤", "대박",
-                        "ㄱㄱ", "~임", "~함", "~인듯"]
-        comm_count = sum(1 for m in comm_markers if m in text)
-        if comm_count == 0:
-            score -= 15
-            reasons.append("커뮤니티 말투 전무")
-        elif comm_count < 3:
-            score -= 5
-            reasons.append("커뮤니티 말투 부족")
+        # 자연스러움 체크 (구어체 흔적이 최소한 있는지)
+        natural_markers = ["?", "!", "...", "근데", "진짜", "좀"]
+        natural_count = sum(1 for m in natural_markers if m in text)
+        if natural_count == 0:
+            score -= 10
+            reasons.append("너무 딱딱한 문체")
 
         # 반복 문장 체크 (동일 시작 문장 감점)
         starts = [s[:5] for s in sentences if len(s) >= 5]
@@ -938,31 +955,9 @@ class ScriptGenerator:
         )
         text = emoji_pattern.sub("", text)
 
-        # 20자 이상 문장 → 자연스러운 위치에서 분리
-        lines = text.split("\n")
-        new_lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            if len(line) > 20:
-                # 조사/어미 뒤에서 분리 시도
-                mid = len(line) // 2
-                split_pos = -1
-                for sep in [". ", "! ", "? ", ", ", "~ ", "ㅋ ", "는 ", "을 ", "를 "]:
-                    pos = line.find(sep, mid - 5)
-                    if 5 <= pos <= len(line) - 5:
-                        split_pos = pos + len(sep)
-                        break
-                if split_pos > 0:
-                    new_lines.append(line[:split_pos].strip())
-                    new_lines.append(line[split_pos:].strip())
-                else:
-                    new_lines.append(line)
-            else:
-                new_lines.append(line)
-
-        text = "\n".join(new_lines)
+        # 빈 줄 정리만 (인위적 문장 분리 하지 않음)
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        text = "\n".join(lines)
         script_data["tts_script"] = text
 
         # 제목에서도 이모지 제거
@@ -2038,9 +2033,12 @@ def make_one_perfect_short(
         if not trends:
             print("\n  [WARN] 트렌드 수집 실패 -> 폴백 주제")
             fallback_topics = [
-                "요즘 편의점 신상 꿀조합", "카페 알바 레전드 썰",
-                "자취생 냉장고 털기 꿀팁", "대학생 공감 짤 모음",
-                "다이소 미친 가성비템", "배달 음식 꿀조합 TOP3",
+                "요즘 가장 핫한 유튜브 밈 총정리",
+                "역대급 반전 있는 영화 3편",
+                "외국인이 한국 와서 충격받은 것들",
+                "한국에서만 가능한 것들 TOP5",
+                "20대가 모르면 손해인 앱 추천",
+                "직장인 퇴근 후 루틴 현실",
             ]
             trends = [{"keyword": random.choice(fallback_topics), "score": 0}]
 
