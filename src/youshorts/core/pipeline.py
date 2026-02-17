@@ -411,19 +411,53 @@ class Pipeline:
         return bool(os.environ.get("SHOTSTACK_API_KEY", ""))
 
     def _run_video_composition(self, total: int = 8) -> None:
-        """영상 합성 (Shotstack 또는 MoviePy).
+        """영상 합성 (FFmpeg 우선 → MoviePy 폴백 → Shotstack 조건부).
 
-        변경 사유: Shotstack 클라우드 렌더링 통합
-        - SHOTSTACK_API_KEY 있으면 → ShotstackRenderer 사용
-        - 없거나 실패 시 → 기존 MoviePy video_composer.py 폴백
+        변경 사유: FFmpeg 1순위로 변경 (메모리 효율)
+        - FFmpeg 직접 렌더링 시도 (기본)
+        - 실패 시 MoviePy 폴백
+        - Shotstack은 명시적 요청 시만
         """
         step = 7 if self.source_url else 6
         self._step(step, total, "영상 합성 중")
 
         words = self.result.script.get("_words", [])
 
+        # 1순위: FFmpeg 직접 렌더링 시도 (메모리 효율)
+        if self.renderer != "shotstack" and self.renderer != "moviepy":
+            try:
+                output_path = self._render_with_ffmpeg_simple(words)
+                if output_path and os.path.exists(output_path):
+                    self.result.output_path = output_path
+                    self.result.edit_style = self.edit_style or "ffmpeg"
+                    self._step_done(step, total, "영상 합성 (FFmpeg)")
+                    return
+            except Exception as e:
+                logger.warning(
+                    "FFmpeg 렌더링 실패: %s → MoviePy 폴백", e,
+                )
+
+        # 2순위: MoviePy 폴백 (기존 로직, 안정적)
+        if self.renderer != "shotstack":
+            logger.info("MoviePy 렌더러로 영상 합성 중...")
+            from youshorts.core.video_composer import compose
+
+            output_path, used_edit_style = compose(
+                self.result.bg_paths,
+                self.result.tts_path,
+                words,
+                self.result.script,
+                self.result.tts_duration,
+                edit_style=self.edit_style,
+                settings=self.settings,
+            )
+            self.result.output_path = output_path
+            self.result.edit_style = used_edit_style
+            self._step_done(step, total, "영상 합성 (MoviePy)")
+            return
+
+        # 3순위: Shotstack (명시적 요청 시만)
         if self._should_use_shotstack():
-            # Shotstack 클라우드 렌더링 시도
             try:
                 output_path = self._render_with_shotstack(words)
                 self.result.output_path = output_path
@@ -431,26 +465,106 @@ class Pipeline:
                 self._step_done(step, total, "영상 합성 (Shotstack)")
                 return
             except Exception as e:
-                logger.warning(
-                    "Shotstack 렌더링 실패: %s → MoviePy 폴백", e,
-                )
+                logger.error("Shotstack 렌더링 실패: %s", e)
+                raise
 
-        # MoviePy 폴백 (기존 로직)
-        logger.info("MoviePy 렌더러로 영상 합성 중...")
-        from youshorts.core.video_composer import compose
+    def _render_with_ffmpeg_simple(self, words: list) -> str:
+        """FFmpeg로 간단한 렌더링을 수행합니다.
 
-        output_path, used_edit_style = compose(
-            self.result.bg_paths,
-            self.result.tts_path,
-            words,
-            self.result.script,
-            self.result.tts_duration,
-            edit_style=self.edit_style,
-            settings=self.settings,
+        배경 영상 + TTS + SRT 자막만 합성하는 단순화 버전.
+        복잡한 레이어 합성은 MoviePy로 폴백.
+
+        Args:
+            words: 워드 그룹 타이밍 리스트.
+
+        Returns:
+            렌더링된 MP4 파일 경로.
+
+        Raises:
+            Exception: FFmpeg 렌더링 실패 시.
+        """
+        import os
+        import re
+        from datetime import datetime
+        from youshorts.core.video_composer import (
+            get_ffmpeg_path,
+            merge_bg_clips_ffmpeg,
+            _randomize_video_params,
         )
-        self.result.output_path = output_path
-        self.result.edit_style = used_edit_style
-        self._step_done(step, total, "영상 합성 (MoviePy)")
+
+        logger.info("FFmpeg 직접 렌더링 시도 중...")
+
+        # FFmpeg 설치 확인
+        if not get_ffmpeg_path():
+            raise FileNotFoundError("FFmpeg 미설치 - MoviePy로 폴백")
+
+        # 배경 영상 병합
+        ensure_dir(self.settings.temp_dir)
+        merged_bg = os.path.join(self.settings.temp_dir, "merged_bg.mp4")
+
+        if len(self.result.bg_paths) > 1:
+            logger.info("배경 클립 %d개 병합 중...", len(self.result.bg_paths))
+            try:
+                merge_bg_clips_ffmpeg(self.result.bg_paths, merged_bg)
+            except Exception as e:
+                logger.warning("배경 병합 실패: %s - 첫 번째 클립만 사용", e)
+                merged_bg = self.result.bg_paths[0]
+        else:
+            merged_bg = self.result.bg_paths[0] if self.result.bg_paths else None
+
+        if not merged_bg or not os.path.exists(merged_bg):
+            raise FileNotFoundError("배경 영상 없음 - MoviePy로 폴백")
+
+        # SRT 자막 생성
+        srt_path = os.path.join(self.settings.temp_dir, "subtitles.srt")
+        self._generate_srt(words, srt_path)
+
+        # 랜덤 파라미터
+        config = _randomize_video_params()
+
+        # 출력 파일명
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_title = re.sub(r'[^\w가-힣]', '_', self.result.script.get("title", "shorts"))[:30]
+        output_path = os.path.join(self.settings.output_dir, f"shorts_{safe_title}_{timestamp}.mp4")
+
+        # FFmpeg 렌더링
+        from youshorts.core.video_composer import render_with_ffmpeg
+        return render_with_ffmpeg(
+            merged_bg,
+            self.result.tts_path,
+            srt_path,
+            output_path,
+            config,
+        )
+
+    def _generate_srt(self, words: list, output_path: str) -> None:
+        """워드 타이밍에서 SRT 자막 파일을 생성합니다.
+
+        Args:
+            words: 워드 그룹 타이밍 리스트.
+            output_path: SRT 출력 경로.
+        """
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for i, word_group in enumerate(words, 1):
+                start_ms = int(word_group['start'] * 1000)
+                end_ms = int(word_group['end'] * 1000)
+
+                start_h = start_ms // 3600000
+                start_m = (start_ms % 3600000) // 60000
+                start_s = (start_ms % 60000) // 1000
+                start_ms_remainder = start_ms % 1000
+
+                end_h = end_ms // 3600000
+                end_m = (end_ms % 3600000) // 60000
+                end_s = (end_ms % 60000) // 1000
+                end_ms_remainder = end_ms % 1000
+
+                f.write(f"{i}\n")
+                f.write(
+                    f"{start_h:02d}:{start_m:02d}:{start_s:02d},{start_ms_remainder:03d} --> "
+                    f"{end_h:02d}:{end_m:02d}:{end_s:02d},{end_ms_remainder:03d}\n"
+                )
+                f.write(f"{word_group['text']}\n\n")
 
     def _render_with_shotstack(self, words: list) -> str:
         """Shotstack API로 영상을 렌더링합니다.

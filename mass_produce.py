@@ -421,9 +421,9 @@ def main() -> None:
 
     parser.add_argument(
         "--renderer",
-        choices=["shotstack", "moviepy", "auto"],
+        choices=["shotstack", "moviepy", "auto", "ffmpeg"],
         default="auto",
-        help="렌더러 선택 (shotstack: 클라우드 / moviepy: 로컬 / auto)",
+        help="렌더러 선택 (auto: FFmpeg→MoviePy 폴백 / ffmpeg: FFmpeg 전용 / moviepy: MoviePy 전용 / shotstack: 클라우드)",
     )
 
     parser.add_argument(
