@@ -1,7 +1,7 @@
 # 변경 사유: 시스템 프롬프트 전체 교체 + 실시간 트렌드 크롤링 + AI 슬롭 방지
 """LLM 기반 대본 생성 모듈.
 
-Gemini 2.0 Flash (기본) 또는 Claude API를 사용하여
+Gemini 2.0 Flash (1순위) → OpenAI GPT-4o-mini (2순위) → Claude (3순위) 폴백 체인으로
 유튜브 수익창출 정책을 준수하는 독창적 스토리텔링 기반
 YouTube Shorts 대본을 생성합니다.
 
@@ -1046,7 +1046,7 @@ def _call_gemini(prompt: str, settings: Settings) -> str:
 
 
 def _call_openai(prompt: str, settings: Settings) -> str:
-    """OpenAI GPT-4o API를 호출합니다 (대본 생성 폴백).
+    """OpenAI GPT-4o-mini API를 호출합니다 (대본 생성 폴백).
 
     Args:
         prompt: 프롬프트 문자열.
@@ -1060,7 +1060,7 @@ def _call_openai(prompt: str, settings: Settings) -> str:
     api_key = SecretsManager.get_secret_value(settings.openai_api_key)
     client = openai.OpenAI(api_key=api_key)
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=6000,
         response_format={"type": "json_object"},
@@ -1093,21 +1093,21 @@ def _call_anthropic(prompt: str, settings: Settings) -> str:
 def _select_llm_backend(settings: Settings) -> str:
     """사용 가능한 LLM 백엔드를 선택합니다.
 
-    Anthropic (Claude) 1순위 → OpenAI GPT-4o 2순위 → Gemini 3순위
+    Google Gemini 1순위 → OpenAI GPT-4o-mini 2순위 → Anthropic Claude 3순위
 
     Returns:
-        "anthropic", "openai", 또는 "gemini".
+        "gemini", "openai", 또는 "anthropic".
     """
-    anthropic_key = SecretsManager.get_secret_value(settings.anthropic_api_key)
-    if anthropic_key:
-        return "anthropic"
-    openai_key = SecretsManager.get_secret_value(settings.openai_api_key)
-    if openai_key:
-        return "openai"
     google_key = SecretsManager.get_secret_value(settings.google_api_key)
     if google_key:
         return "gemini"
-    raise RuntimeError("ANTHROPIC_API_KEY, OPENAI_API_KEY, 또는 GOOGLE_API_KEY를 설정해주세요.")
+    openai_key = SecretsManager.get_secret_value(settings.openai_api_key)
+    if openai_key:
+        return "openai"
+    anthropic_key = SecretsManager.get_secret_value(settings.anthropic_api_key)
+    if anthropic_key:
+        return "anthropic"
+    raise RuntimeError("GOOGLE_API_KEY, OPENAI_API_KEY, 또는 ANTHROPIC_API_KEY를 설정해주세요.")
 
 
 @retry(max_retries=2, retryable_exceptions=(ConnectionError, TimeoutError, OSError))
@@ -1153,50 +1153,50 @@ def generate_script(
     backend = _select_llm_backend(settings)
     logger.info("%s 대본 생성 요청 (스타일: %s, 관점: %s)", backend.upper(), style, angle)
 
-    # 대본 생성: Claude 1순위 → OpenAI 2순위 → Gemini 3순위
+    # 대본 생성: Gemini 1순위 → OpenAI 2순위 → Claude 3순위
     text = ""
-    if backend == "anthropic":
+    if backend == "gemini":
         try:
-            text = _call_anthropic(prompt, settings)
+            text = _call_gemini(prompt, settings)
         except Exception as e:
-            logger.warning("Anthropic 호출 실패: %s - OpenAI 폴백 시도", e)
+            logger.warning("Gemini 호출 실패: %s - OpenAI 폴백 시도", e)
             openai_key = SecretsManager.get_secret_value(settings.openai_api_key)
             if openai_key:
                 try:
                     text = _call_openai(prompt, settings)
                     backend = "openai"
-                    logger.info("OpenAI GPT-4o 폴백 성공")
+                    logger.info("OpenAI GPT-4o-mini 폴백 성공")
                 except Exception as oai_err:
-                    logger.warning("OpenAI 호출 실패: %s - Gemini 폴백 시도", oai_err)
-                    google_key = SecretsManager.get_secret_value(settings.google_api_key)
-                    if google_key:
-                        text = _call_gemini(prompt, settings)
-                        backend = "gemini"
+                    logger.warning("OpenAI 호출 실패: %s - Anthropic 폴백 시도", oai_err)
+                    anthropic_key = SecretsManager.get_secret_value(settings.anthropic_api_key)
+                    if anthropic_key:
+                        text = _call_anthropic(prompt, settings)
+                        backend = "anthropic"
                     else:
                         raise
             else:
-                google_key = SecretsManager.get_secret_value(settings.google_api_key)
-                if google_key:
-                    text = _call_gemini(prompt, settings)
-                    backend = "gemini"
+                anthropic_key = SecretsManager.get_secret_value(settings.anthropic_api_key)
+                if anthropic_key:
+                    text = _call_anthropic(prompt, settings)
+                    backend = "anthropic"
                 else:
                     raise
     elif backend == "openai":
         try:
             text = _call_openai(prompt, settings)
         except Exception as e:
-            logger.warning("OpenAI 호출 실패: %s - Gemini 폴백 시도", e)
-            google_key = SecretsManager.get_secret_value(settings.google_api_key)
-            if google_key:
-                text = _call_gemini(prompt, settings)
-                backend = "gemini"
+            logger.warning("OpenAI 호출 실패: %s - Anthropic 폴백 시도", e)
+            anthropic_key = SecretsManager.get_secret_value(settings.anthropic_api_key)
+            if anthropic_key:
+                text = _call_anthropic(prompt, settings)
+                backend = "anthropic"
             else:
                 raise
-    else:  # gemini
+    else:  # anthropic
         try:
-            text = _call_gemini(prompt, settings)
+            text = _call_anthropic(prompt, settings)
         except Exception as e:
-            logger.warning("Gemini 호출 실패: %s", e)
+            logger.warning("Anthropic 호출 실패: %s", e)
             raise
 
     script = _parse_script_response(text)
