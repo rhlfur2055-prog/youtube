@@ -80,7 +80,7 @@ class Config:
     SUBTITLE_COLOR_HIGHLIGHT = "&H0000FFFF"
     SUBTITLE_OUTLINE = 4
     SUBTITLE_SHADOW = 2
-    SUBTITLE_MARGIN_V = 80
+    SUBTITLE_MARGIN_V = 350
 
     # ── 품질 ──
     MIN_QUALITY_SCORE = 85
@@ -1316,6 +1316,7 @@ class VideoRenderer:
         return str(random.choice(bgms))
 
     def _get_video_duration(self, video_path: str) -> float:
+        # 1차: ffprobe
         try:
             result = subprocess.run(
                 [self._find_ffprobe(), "-v", "quiet",
@@ -1323,12 +1324,28 @@ class VideoRenderer:
                  "-of", "csv=p=0", video_path],
                 capture_output=True, text=True, timeout=10,
             )
-            return float(result.stdout.strip())
+            val = result.stdout.strip()
+            if val:
+                return float(val)
         except Exception:
-            return 300
+            pass
+        # 2차: ffmpeg -i stderr에서 Duration 파싱
+        try:
+            result = subprocess.run(
+                [self._find_ffmpeg(), "-i", video_path],
+                capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
+            )
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", result.stderr)
+            if m:
+                h, mi, s, cs = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+                return h * 3600 + mi * 60 + s + cs / 100
+        except Exception:
+            pass
+        return 60  # 안전한 기본값
 
     def render(self, tts_mp3: str, ass_subtitle: str, output_mp4: str,
-               topic: str = "") -> str:
+               topic: str = "", title: str = "") -> str:
         print("\n" + "=" * 60)
         print("STEP 5: FFmpeg 렌더링")
         print("=" * 60)
@@ -1351,8 +1368,12 @@ class VideoRenderer:
 
         if bg_video:
             bg_duration = self._get_video_duration(bg_video)
-            max_start = max(0, bg_duration - target_duration - 5)
-            random_start = random.uniform(0, max_start) if max_start > 0 else 0
+            # 생성된 배경(65초)이면 duration 신뢰 불가 → 0부터 시작
+            if bg_duration > target_duration + 10:
+                max_start = max(0, bg_duration - target_duration - 5)
+                random_start = random.uniform(0, max_start)
+            else:
+                random_start = 0
             cmd.extend(["-ss", f"{random_start:.1f}", "-i", bg_video])
             print(f"  렌더링 시작...")
             print(f"  목표 길이: {target_duration:.1f}초")
@@ -1378,6 +1399,27 @@ class VideoRenderer:
 
         if os.path.exists(temp_ass):
             video_filters.append("ass=temp/sub.ass")
+
+        # ── 상단 제목 바 (drawbox + drawtext via textfile) ──
+        display_title = (title or topic or "")[:25]
+        if display_title:
+            # 한글 → textfile 방식 (FFmpeg text= 한글 깨짐 방지)
+            title_txt = str(temp_dir / "title.txt")
+            with open(title_txt, "w", encoding="utf-8") as tf:
+                tf.write(display_title)
+            # Windows 경로 → FFmpeg 호환 (C\:/path)
+            fontpath = "C\\:/Windows/Fonts/malgunbd.ttf"
+            titlepath = title_txt.replace("\\", "/").replace("C:/", "C\\:/")
+            video_filters.append(
+                "drawbox=x=0:y=60:w=iw:h=130:color=black@0.5:t=fill"
+            )
+            video_filters.append(
+                f"drawtext=fontfile='{fontpath}'"
+                f":textfile='{titlepath}'"
+                f":fontcolor=white:fontsize=30"
+                f":x=(w-text_w)/2:y=105"
+            )
+            print(f"  상단 제목 바: '{display_title}'")
 
         video_filter_str = ",".join(video_filters)
 
@@ -1919,7 +1961,10 @@ def make_one_perfect_short(
     output_mp4 = str(work_dir / output_filename)
 
     renderer = VideoRenderer()
-    final_video = renderer.render(tts_mp3, ass_file, output_mp4, topic=selected_topic)
+    final_video = renderer.render(
+        tts_mp3, ass_file, output_mp4,
+        topic=selected_topic, title=script_data.get("title", ""),
+    )
 
     # ── STEP 6: 이력 저장 ──
     print("\n" + "=" * 60)
