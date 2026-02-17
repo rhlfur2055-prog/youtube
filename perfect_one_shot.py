@@ -197,9 +197,9 @@ class TrendCollector:
 
         return results
 
-    # ── 3. 커뮤니티 핫글 크롤링 ──
+    # ── 3. 커뮤니티 핫글 크롤링 (제목 + 본문) ──
     def fetch_community_hot(self) -> list[dict]:
-        """에펨코리아/인스티즈 실시간 베스트"""
+        """에펨코리아/인스티즈/네이트판 실시간 베스트 — 본문까지 수집"""
         import requests
         from bs4 import BeautifulSoup
 
@@ -207,14 +207,25 @@ class TrendCollector:
 
         communities = [
             {
+                "name": "네이트판",
+                "url": "https://pann.nate.com/talk/ranking",
+                "title_sel": ".tlt",
+                "base_url": "https://pann.nate.com",
+                "body_sel": "#contentArea, .posting_area, #content",
+            },
+            {
                 "name": "에펨코리아",
                 "url": "https://www.fmkorea.com/index.php?mid=best&listStyle=list",
                 "title_sel": ".title a",
+                "base_url": "https://www.fmkorea.com",
+                "body_sel": ".rd_body, .xe_content, article",
             },
             {
                 "name": "인스티즈",
                 "url": "https://www.instiz.net/pt",
                 "title_sel": ".listsubject a",
+                "base_url": "https://www.instiz.net",
+                "body_sel": ".memo_content, .xe_content",
             },
         ]
 
@@ -238,13 +249,25 @@ class TrendCollector:
                 count = 0
                 for i, t in enumerate(titles[:10]):
                     text = t.get_text(strip=True)
-                    if text and len(text) > 5 and "[광고]" not in text:
-                        results.append({
-                            "keyword": text,
-                            "source": f"community_{comm['name']}",
-                            "score": (10 - i) * 3000,
-                        })
-                        count += 1
+                    # 끝에 붙는 숫자(조회수) 제거
+                    text = re.sub(r'\d{2,}$', '', text).strip()
+
+                    if not text or len(text) < 5 or "[광고]" in text:
+                        continue
+
+                    # 게시글 URL 추출
+                    href = t.get("href", "")
+                    if href and not href.startswith("http"):
+                        href = comm["base_url"] + href
+
+                    results.append({
+                        "keyword": text,
+                        "source": f"community_{comm['name']}",
+                        "score": (10 - i) * 3000,
+                        "url": href,
+                        "body": "",  # 나중에 채움
+                    })
+                    count += 1
 
                 print(f"  [OK] {comm['name']}: {count}개")
 
@@ -252,6 +275,46 @@ class TrendCollector:
                 print(f"  [WARN] {comm['name']} 실패: {e}")
 
         return results
+
+    def fetch_post_body(self, url: str, selectors: str = "") -> str:
+        """게시글 URL에서 본문 텍스트를 크롤링"""
+        import requests
+        from bs4 import BeautifulSoup
+
+        if not url:
+            return ""
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 Chrome/120.0.0.0",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+        }
+
+        try:
+            resp = requests.get(url, timeout=8, headers=headers, verify=False)
+            if resp.status_code != 200:
+                return ""
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # 여러 셀렉터 시도
+            body_selectors = [
+                "#contentArea", ".posting_area", "#content",
+                ".rd_body", ".xe_content", "article",
+                ".memo_content", ".post_content",
+            ]
+
+            for sel in body_selectors:
+                body_el = soup.select_one(sel)
+                if body_el:
+                    text = body_el.get_text(separator="\n", strip=True)
+                    if len(text) > 30:
+                        return text[:2000]  # 최대 2000자
+
+        except Exception:
+            pass
+
+        return ""
 
     # ── 통합: 3개 소스 병합 + 중복 제거 + 정렬 ──
     def collect_all(self) -> list[dict]:
@@ -370,35 +433,49 @@ class NewsCollector:
 class ScriptGenerator:
     """Gemini 2.0 Flash (무료, 1순위) -> GPT-4o-mini (유료, 2순위 폴백)"""
 
-    PROMPT_TEMPLATE = """당신은 유튜브 숏츠 전문 작가입니다.
-아래 주제와 관련 뉴스를 바탕으로 40~55초 분량의 TTS 대본을 작성하세요.
+    PROMPT_TEMPLATE = """너는 에펨코리아 인기글을 읽어주는 유튜브 쇼츠 나레이터야.
 
-## 규칙 (반드시 지킬 것)
-1. 한국 커뮤니티 썰 말투 (ex: "야 이거 실화임?", "ㅋㅋ 진짜 미쳤는데")
-2. 첫 문장에서 바로 후킹 (질문 or 충격적 사실)
-3. 실제 뉴스/사실에 기반한 내용 (지어내지 마)
-4. 인물 실명 절대 금지 -> "어떤 사장님", "한 직원" 등으로 대체
-5. 300~450자 사이 (이 범위 벗어나면 실격)
-6. 마지막 문장은 반전 or 공감 유도 ("너희는 어떻게 생각해?")
+규칙:
+1. 아래 [원글 내용]을 20대 남성 말투로 읽어주기만 해. 절대 새로 지어내지 마.
+2. 원글에 없는 내용 추가 금지. 팩트만 전달.
+3. 첫 문장: "야 이거 실화임" 또는 "아니 이게 말이 돼?" 중 하나로 시작
+4. 마지막 문장: "ㄹㅇ 레전드ㅋㅋ" 또는 "소름돋음ㄷㄷ" 중 하나로 끝
+5. 문장당 최대 15자. 짧게 끊어.
+6. "여러분", 사람이름, "경제학", "딜레마", **볼드**, "마무리하며" 전부 금지
+7. 원글 body의 핵심 사실을 80% 이상 포함해야 함
+8. 전체 대본 200~350자
 
-## 절대 쓰지 말 것 (AI 슬롭)
-{slop_words}
+{source_section}
+주제: {topic}
 
-## 주제
-{topic}
+[절대 금지 - 위반 시 대본 폐기]
+- 사람 이름 (김서연, 박준호 등) -> "걔", "그놈", "사장", "알바생"으로 대체
+- "여러분", "선택은?", "어떻게 생각해?", "의견을 남겨주세요"
+- "경제학", "딜레마", "철학", "마무리하며", "결론적으로"
+- "안녕하세요", "오늘은", "흥미로운", "살펴보겠습니다"
+- **볼드**, 숫자/통계 지어내기, 이모지
 
-## 관련 뉴스 (팩트 원료)
-{news_context}
-
-## 출력 형식 (JSON)
+[출력 형식 - 반드시 JSON]
 {{
-  "title": "숏츠 제목 (25자 이내, 이모지 금지)",
+  "title": "숏츠 제목 (20자 이내, 이모지 금지, ㅋㅋ나 ㄷㄷ 사용 OK)",
   "tts_script": "TTS로 읽을 대본 전문",
   "tags": ["태그1", "태그2", "태그3", "태그4", "태그5"],
   "description": "유튜브 설명란 (2줄)"
 }}"""
 
-    def _call_gemini(self, topic: str, news: list[dict]) -> Optional[dict]:
+    def _build_prompt(self, topic: str, source_text: str) -> str:
+        """프롬프트 생성 — 원글 본문이 있으면 [원글 내용]으로 전달"""
+        if source_text:
+            source_section = f"[원글 내용]\n{source_text[:2000]}"
+        else:
+            source_section = "[원글 내용]\n(본문 수집 실패 — 주제만으로 팩트 기반 대본 작성)"
+
+        return self.PROMPT_TEMPLATE.format(
+            topic=topic,
+            source_section=source_section,
+        )
+
+    def _call_gemini(self, topic: str, source_text: str) -> Optional[dict]:
         """Gemini 2.0 Flash - 무료, 1순위"""
         try:
             import google.generativeai as genai
@@ -411,15 +488,7 @@ class ScriptGenerator:
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel("gemini-2.0-flash")
 
-            news_text = "\n".join(
-                [f"- {n['title']}: {n['desc']}" for n in news[:5]]
-            ) or "관련 뉴스 없음 - 일반 상식 기반으로 작성"
-
-            prompt = self.PROMPT_TEMPLATE.format(
-                topic=topic,
-                news_context=news_text,
-                slop_words=", ".join(Config.AI_SLOP_WORDS),
-            )
+            prompt = self._build_prompt(topic, source_text)
 
             response = model.generate_content(
                 prompt,
@@ -429,12 +498,22 @@ class ScriptGenerator:
                 ),
             )
 
-            # JSON 추출 (마크다운 코드블록 제거)
+            # JSON 추출 (마크다운 코드블록 + 불완전 JSON 대응)
             text = response.text
             text = re.sub(r"```json\s*", "", text)
             text = re.sub(r"```\s*", "", text)
+            text = text.strip()
 
-            result = json.loads(text.strip())
+            # JSON 객체 부분만 추출 ({...} 찾기)
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                text = json_match.group(0)
+
+            # 제어 문자 제거
+            text = re.sub(r'[\x00-\x1f]', ' ', text)
+            text = text.replace('\n', '\\n')
+
+            result = json.loads(text)
             print("  [OK] Gemini 대본 생성 성공")
             return result
 
@@ -442,7 +521,7 @@ class ScriptGenerator:
             print(f"  [WARN] Gemini 실패: {e}")
             return None
 
-    def _call_openai(self, topic: str, news: list[dict]) -> Optional[dict]:
+    def _call_openai(self, topic: str, source_text: str) -> Optional[dict]:
         """GPT-4o-mini - 유료, 2순위 폴백"""
         try:
             import openai
@@ -453,20 +532,14 @@ class ScriptGenerator:
 
             client = openai.OpenAI(api_key=api_key)
 
-            news_text = "\n".join(
-                [f"- {n['title']}: {n['desc']}" for n in news[:5]]
-            ) or "관련 뉴스 없음"
+            prompt = self._build_prompt(topic, source_text)
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 response_format={"type": "json_object"},
                 messages=[{
                     "role": "user",
-                    "content": self.PROMPT_TEMPLATE.format(
-                        topic=topic,
-                        news_context=news_text,
-                        slop_words=", ".join(Config.AI_SLOP_WORDS),
-                    ),
+                    "content": prompt,
                 }],
                 temperature=0.9,
             )
@@ -487,12 +560,12 @@ class ScriptGenerator:
         text = script_data.get("tts_script", "")
         title = script_data.get("title", "")
 
-        # 1. 길이 체크
-        if len(text) < 300:
+        # 1. 길이 체크 (프롬프트: 200~350자)
+        if len(text) < 200:
             score -= 20
             reasons.append(f"너무 짧음 ({len(text)}자)")
-        elif len(text) > 450:
-            score -= 20
+        elif len(text) > 400:
+            score -= 15
             reasons.append(f"너무 김 ({len(text)}자)")
 
         # 2. AI 슬롭 체크
@@ -508,7 +581,7 @@ class ScriptGenerator:
             reasons.append("실명 포함 의심")
 
         # 4. 제목 길이
-        if len(title) > 25:
+        if len(title) > 20:
             score -= 10
             reasons.append(f"제목 너무 김 ({len(title)}자)")
 
@@ -517,9 +590,24 @@ class ScriptGenerator:
             "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
             "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]"
         )
-        if emoji_pattern.search(title):
-            score -= 5
-            reasons.append("제목에 이모지")
+        if emoji_pattern.search(title) or emoji_pattern.search(text):
+            score -= 10
+            reasons.append("이모지 포함")
+
+        # 6. 금지어 체크 (프롬프트 위반)
+        banned = ["여러분", "어떻게 생각해", "의견을 남겨", "선택은?",
+                  "경제학", "딜레마", "마무리하며", "결론적으로",
+                  "안녕하세요", "오늘은", "살펴보겠"]
+        for word in banned:
+            if word in text:
+                score -= 15
+                reasons.append(f"금지어: '{word}'")
+
+        # 7. 커뮤니티 마커 없으면 감점
+        markers = ["ㅋㅋ", "ㄷㄷ", "ㄹㅇ", "ㅎㅎ", "실화", "미친", "레전드"]
+        if not any(m in text for m in markers):
+            score -= 10
+            reasons.append("커뮤니티 말투 부족")
 
         score = max(0, score)
 
@@ -554,18 +642,26 @@ class ScriptGenerator:
         script_data["tts_script"] = text
         return script_data
 
-    def generate(self, topic: str, news: list[dict]) -> dict:
-        """대본 생성 메인 - 품질 85점 이상까지 최대 3회"""
+    def generate(self, topic: str, source_text: str = "") -> dict:
+        """대본 생성 메인 - 품질 85점 이상까지 최대 3회, 실패 시 최선의 결과 사용"""
         print("\n" + "=" * 60)
         print("STEP 2: 대본 생성 (Gemini -> OpenAI 폴백)")
         print("=" * 60)
 
+        if source_text:
+            print(f"  원글 본문: {len(source_text)}자 전달")
+        else:
+            print("  [WARN] 원글 본문 없음 — 주제만으로 생성")
+
+        best_result = None
+        best_score = 0
+
         for attempt in range(Config.MAX_RETRY):
             print(f"\n  시도 {attempt + 1}/{Config.MAX_RETRY}")
 
-            result = self._call_gemini(topic, news)
+            result = self._call_gemini(topic, source_text)
             if result is None:
-                result = self._call_openai(topic, news)
+                result = self._call_openai(topic, source_text)
 
             if result is None:
                 print("  [ERROR] LLM 전부 실패")
@@ -573,6 +669,12 @@ class ScriptGenerator:
 
             result = self._post_process(result)
             score = self._quality_check(result)
+
+            # 최선의 결과 저장
+            if score > best_score:
+                best_score = score
+                best_result = result.copy()
+                best_result["quality_score"] = score
 
             if score >= Config.MIN_QUALITY_SCORE:
                 result["quality_score"] = score
@@ -582,6 +684,11 @@ class ScriptGenerator:
                 return result
 
             print(f"  [FAIL] {score}점 < {Config.MIN_QUALITY_SCORE}점 -> 재생성")
+
+        # 3회 모두 미달이면 최선의 결과 사용 (100자 이상이면)
+        if best_result and len(best_result.get("tts_script", "")) >= 100:
+            print(f"\n  [WARN] 3회 미달 -> 최선의 결과 사용 ({best_score}점)")
+            return best_result
 
         raise RuntimeError("대본 생성 실패: 3회 모두 품질 미달")
 
@@ -1131,24 +1238,42 @@ def make_one_perfect_short():
 
     # 중복 체크
     history = HistoryManager()
-    selected_topic = None
+    selected_trend = None
     for t in trends:
         if not history.is_duplicate(t["keyword"]):
-            selected_topic = t["keyword"]
+            selected_trend = t
             break
 
-    if not selected_topic:
-        selected_topic = trends[0]["keyword"]
+    if not selected_trend:
+        selected_trend = trends[0]
 
+    selected_topic = selected_trend["keyword"]
     print(f"\n  선정된 주제: {selected_topic}")
 
-    # ── STEP 1.5: 뉴스 보강 ──
-    news_collector = NewsCollector()
-    news = news_collector.collect_news(selected_topic)
+    # ── STEP 1.5: 본문 크롤링 (커뮤니티 게시글이면 URL에서 본문 수집) ──
+    source_text = ""
+    post_url = selected_trend.get("url", "")
+    if post_url and "community_" in selected_trend.get("source", ""):
+        print(f"\n  본문 크롤링 시도: {post_url[:80]}...")
+        source_text = trend_collector.fetch_post_body(post_url)
+        if source_text:
+            print(f"  [OK] 본문 수집: {len(source_text)}자")
+        else:
+            print("  [WARN] 본문 수집 실패 — 뉴스로 보강")
+
+    # 본문이 없으면 뉴스에서 팩트 원료 수집
+    if not source_text:
+        news_collector = NewsCollector()
+        news = news_collector.collect_news(selected_topic)
+        # 뉴스 제목들을 source_text로 합침
+        if news:
+            source_text = "\n".join(
+                [f"- {n['title']}: {n.get('desc', '')}" for n in news[:5]]
+            )
 
     # ── STEP 2: 대본 생성 ──
     script_gen = ScriptGenerator()
-    script_data = script_gen.generate(selected_topic, news)
+    script_data = script_gen.generate(selected_topic, source_text)
 
     # 대본 저장
     script_file = work_dir / "script.json"
