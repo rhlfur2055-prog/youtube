@@ -236,7 +236,7 @@ class Config:
         self.google_api_key = os.getenv("GOOGLE_API_KEY", self.google_api_key)
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", self.anthropic_api_key)
         self.apify_api_token = os.getenv("APIFY_API_TOKEN", self.apify_api_token)
-        # v6.0: 멀티엔진 TTS + GoAPI
+        # v6.0: 멀티엔진 TTS
         self.elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", self.elevenlabs_api_key)
         self.elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", self.elevenlabs_voice_id)
         os.makedirs(self.output_dir, exist_ok=True)
@@ -934,9 +934,6 @@ class ImageGenerator:
         self._used_photo_ids = set()
         self._bing_creator = None  # Bing DALL-E 3 (lazy init)
         self._bing_failed = False  # Bing 전체 실패 플래그
-        # v6.0: GoAPI Midjourney (0순위)
-        self._goapi = None
-        self._goapi_failed = False
         # v10.0: Kling AI image-to-video (첫/마지막 장면)
         self._kling = KlingVideoGenerator()
         if self._kling.available:
@@ -956,13 +953,11 @@ class ImageGenerator:
     def generate_scene_images(self, script_data: dict, work_dir: str) -> list[dict]:
         """
         v6.0: 대본의 각 장면에 대해 웹툰 이미지 생성.
-        우선순위: GoAPI Midjourney → Replicate FLUX → Bing DALL-E 3 → 재사용
+        우선순위: Replicate FLUX → Bing DALL-E 3 → 재사용
         Returns: [{"chunk_idx": 0, "end_idx": 2, "image_path": "...", "prompt": "..."}]
         """
         # ★ 캐릭터 일관성: 새 영상 시작 시 캐릭터 기억 리셋
         self._character_desc = ""
-        if self._goapi:
-            self._goapi.reset_session()
 
         script_lines = script_data.get("script", [])
         mood = script_data.get("mood", "")
@@ -975,8 +970,6 @@ class ImageGenerator:
 
         # 엔진 우선순위 표시
         engines = []
-        if self._goapi and not self._goapi_failed:
-            engines.append("Midjourney (GoAPI)")
         if self.replicate_token:
             engines.append("Replicate FLUX")
         engines.append("Bing DALL-E 3")
@@ -984,41 +977,12 @@ class ImageGenerator:
         print(f"    엔진 우선순위: {' → '.join(engines)}")
 
         bing_consecutive_fail = 0
-        goapi_consecutive_fail = 0
         last_success_path = ""  # ★ 직전 성공 이미지 경로 (Pexels 대신 재사용)
 
         for gi, group in enumerate(scene_groups):
             raw_prompt = group.get("image_prompt", "")
             image_path = os.path.join(images_dir, f"scene_{gi:03d}.jpg")
             success = False
-
-            # ── 0순위: GoAPI Midjourney (--sref/--cref 캐릭터 일관성) ──
-            if self._goapi and not self._goapi_failed and goapi_consecutive_fail < 3:
-                try:
-                    mj_prompt = self._build_mj_prompt_for_goapi(
-                        raw_prompt, group["texts"], mood
-                    )
-                    # 첫 이미지: sref/cref 없음 → 이후: 자동 주입
-                    sref = self._goapi.first_image_url if gi > 0 else None
-                    cref = self._goapi.first_image_url if gi > 0 else None
-                    success = self._goapi.generate_image(
-                        mj_prompt, image_path,
-                        style_ref=sref, char_ref=cref,
-                    )
-                    if success:
-                        goapi_consecutive_fail = 0
-                        print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🎨 Midjourney: "
-                              f"{raw_prompt[:45]}...")
-                    else:
-                        goapi_consecutive_fail += 1
-                        if goapi_consecutive_fail >= 3:
-                            print(f"    ⚠️  GoAPI 3회 연속 실패 → 폴백 전환")
-                            self._goapi_failed = True
-                except Exception as e:
-                    goapi_consecutive_fail += 1
-                    print(f"    ⚠️  GoAPI 예외: {e}")
-                    if goapi_consecutive_fail >= 3:
-                        self._goapi_failed = True
 
             # ── 1순위: Replicate FLUX-schnell ──
             if not success and self.replicate_token:
@@ -1173,29 +1137,6 @@ class ImageGenerator:
         if not self._character_desc and en_prompt:
             self._character_desc = en_prompt[:120]
         return full
-
-    def _build_mj_prompt_for_goapi(self, image_prompt: str,
-                                     texts: list[str], mood: str) -> str:
-        """Midjourney 최적화 프롬프트 빌드 (GoAPI용).
-
-        ★ Midjourney는 프롬프트가 짧을수록 잘 동작함 (200자 이내 권장).
-        ★ --sref/--cref 파라미터는 goapi_midjourney.py에서 가장 마지막에 붙임.
-        """
-        mood_style = self.MOOD_STYLE.get(mood, "")
-        if image_prompt:
-            en_prompt = self._auto_en_prompt_from_kr(image_prompt, mood)
-        else:
-            en_prompt = self._auto_en_prompt(texts, mood)
-
-        prefix = ("Korean B-grade webtoon manhwa style, bold outlines, "
-                   "exaggerated comedic expressions")
-        prompt = f"{prefix}, {mood_style}{en_prompt}"
-
-        # Midjourney 프롬프트 200자 제한 (파라미터 씹힘 방지)
-        if len(prompt) > 200:
-            prompt = prompt[:200].rstrip(", ")
-
-        return prompt
 
     def _auto_en_prompt_from_kr(self, kr_prompt: str, mood: str) -> str:
         """한국어 image_prompt를 영어로 변환 (Gemini 번역 → 키워드 폴백)
@@ -6893,8 +6834,6 @@ def parse_args():
 환경변수:
   GOOGLE_API_KEY      Gemini API 키 (필수, 무료)
   ELEVENLABS_API_KEY  ElevenLabs TTS (선택, 1순위 고품질)
-  OPENAI_API_KEY      OpenAI TTS (선택, 2순위)
-  GOAPI_KEY           GoAPI Midjourney (선택, 이미지 생성)
   APIFY_API_TOKEN     Apify API 토큰 (선택, 커뮤니티 크롤링 시)
         """
     )

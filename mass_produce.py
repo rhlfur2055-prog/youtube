@@ -111,6 +111,58 @@ def _increment_today(history: dict) -> None:
     history["total"] = history.get("total", 0) + 1
 
 
+def _cleanup_old_history() -> None:
+    """30일 이상 된 히스토리 항목 자동 삭제 (mass_produce + topic_history)"""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+
+    # 1) mass_produce_history.json — daily 키에서 30일 지난 날짜 제거
+    history = _load_history()
+    daily = history.get("daily", {})
+    old_keys = [k for k in daily if k < cutoff[:10]]
+    if old_keys:
+        for k in old_keys:
+            del daily[k]
+        _save_history(history)
+        print(f"  🧹 mass_produce_history: {len(old_keys)}일치 오래된 기록 삭제")
+
+    # 2) data/history.json — 배열에서 30일 지난 항목 제거
+    main_history = SCRIPT_DIR / "data" / "history.json"
+    if main_history.exists():
+        try:
+            with open(main_history, "r", encoding="utf-8") as f:
+                records = json.load(f)
+            if isinstance(records, list):
+                before = len(records)
+                records = [r for r in records
+                           if r.get("timestamp", "") >= cutoff]
+                removed = before - len(records)
+                if removed > 0:
+                    with open(main_history, "w", encoding="utf-8") as f:
+                        json.dump(records, f, ensure_ascii=False, indent=2)
+                    print(f"  🧹 history.json: {removed}건 오래된 기록 삭제")
+        except Exception:
+            pass
+
+    # 3) data/topic_history.json — 배열에서 30일 지난 항목 제거
+    topic_history = SCRIPT_DIR / "data" / "topic_history.json"
+    if topic_history.exists():
+        try:
+            with open(topic_history, "r", encoding="utf-8") as f:
+                topics = json.load(f)
+            if isinstance(topics, list):
+                before = len(topics)
+                topics = [t for t in topics
+                          if t.get("timestamp", t.get("date", "")) >= cutoff]
+                removed = before - len(topics)
+                if removed > 0:
+                    with open(topic_history, "w", encoding="utf-8") as f:
+                        json.dump(topics, f, ensure_ascii=False, indent=2)
+                    print(f"  🧹 topic_history.json: {removed}건 오래된 기록 삭제")
+        except Exception:
+            pass
+
+
 # ============================================================
 # topics.txt 큐 관리
 # ============================================================
@@ -624,6 +676,9 @@ def main() -> None:
                       help="비정상 + 임시파일 전부 삭제")
 
     args = parser.parse_args()
+
+    # 30일 이상 히스토리 자동 정리
+    _cleanup_old_history()
 
     # 정리 모드
     if args.clean or args.clean_all:

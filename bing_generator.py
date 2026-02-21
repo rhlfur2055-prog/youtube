@@ -89,45 +89,64 @@ class BingImageCreator:
         print("    [Bing] Chrome 브라우저 시작됨")
 
     def generate_image(self, prompt: str, save_path: str,
-                       timeout: int = 90) -> bool:
+                       timeout: int = 90, max_retries: int = 3) -> bool:
         """
-        Bing Image Creator로 이미지 1장 생성 + 다운로드
+        Bing Image Creator로 이미지 1장 생성 + 다운로드 (최대 3회 재시도)
 
         Args:
             prompt: 영어 이미지 프롬프트
             save_path: 저장 경로 (.jpg)
             timeout: 생성 대기 시간 (초)
+            max_retries: 최대 재시도 횟수
 
         Returns:
             성공 여부
         """
-        try:
-            self._init_driver()
+        for attempt in range(1, max_retries + 1):
+            try:
+                self._init_driver()
 
-            # 1. Bing Image Creator 페이지 이동
-            self.driver.get(self.BING_URL)
-            time.sleep(3)
+                # 1. Bing Image Creator 페이지 이동
+                self.driver.get(self.BING_URL)
+                time.sleep(3)
 
-            # 로그인 확인
-            if not self._check_login():
-                print("    [Bing] Microsoft 로그인 필요! Chrome에서 먼저 bing.com에 로그인해주세요.")
-                return False
+                # 로그인 확인
+                if not self._check_login():
+                    print("    [Bing] Microsoft 로그인 필요! Chrome에서 먼저 bing.com에 로그인해주세요.")
+                    return False
 
-            # 2. 프롬프트 입력
-            if not self._input_prompt(prompt):
-                return False
+                # 2. 프롬프트 입력
+                if not self._input_prompt(prompt):
+                    if attempt < max_retries:
+                        print(f"    [Bing] 재시도 {attempt}/{max_retries}...")
+                        time.sleep(3)
+                        continue
+                    return False
 
-            # 3. 생성 대기 + 이미지 추출
-            image_url = self._wait_and_extract(timeout)
-            if not image_url:
-                return False
+                # 3. 생성 대기 + 이미지 추출
+                image_url = self._wait_and_extract(timeout)
+                if not image_url:
+                    if attempt < max_retries:
+                        print(f"    [Bing] 재시도 {attempt}/{max_retries}...")
+                        time.sleep(3)
+                        continue
+                    return False
 
-            # 4. 고화질 다운로드 + 1080x1920 리사이즈
-            return self._download_and_resize(image_url, save_path)
+                # 4. 고화질 다운로드 + 1080x1920 리사이즈
+                if self._download_and_resize(image_url, save_path):
+                    return True
 
-        except Exception as e:
-            print(f"    [Bing] 에러: {str(e)[:100]}")
-            return False
+                if attempt < max_retries:
+                    print(f"    [Bing] 다운로드 실패, 재시도 {attempt}/{max_retries}...")
+                    time.sleep(3)
+
+            except Exception as e:
+                print(f"    [Bing] 에러 ({attempt}/{max_retries}): {str(e)[:100]}")
+                if attempt < max_retries:
+                    time.sleep(3)
+
+        print(f"    [Bing] {max_retries}회 모두 실패")
+        return False
 
     def _check_login(self) -> bool:
         """Microsoft 계정 로그인 상태 확인"""
