@@ -1,4 +1,4 @@
-# youshorts 올인원 스크립트 의존성
+# youshorts v6.0 올인원 스크립트 의존성
 # 사용법: pip install -r requirements.txt
 
 # 필수
@@ -7,14 +7,16 @@ google-generativeai>=0.8.0
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 python-dotenv>=1.0.0
+Pillow>=10.0.0
 
 # YouTube 업로드 (선택)
 google-auth-oauthlib>=1.0.0
 google-api-python-client>=2.100.0
 
-# TTS 폴백 (선택 - 키 있으면 자동 사용)
-# elevenlabs  → ELEVENLABS_API_KEY
-# openai      → OPENAI_API_KEY
+# TTS 고품질 (선택 - 키 있으면 자동 사용)
+elevenlabs>=1.0.0
+openai>=1.0.0
+aiohttp>=3.9.0
 
 # APIFY 크롤링 (선택)
 # apify-client → APIFY_TOKEN

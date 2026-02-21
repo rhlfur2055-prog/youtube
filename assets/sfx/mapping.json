@@ -1,0 +1,21 @@
+{
+    "laugh": {"file": "comedy/laugh.mp3", "volume": 0.5, "category": "comedy"},
+    "rimshot": {"file": "comedy/rimshot.mp3", "volume": 0.5, "category": "comedy"},
+    "boing": {"file": "comedy/boing.mp3", "volume": 0.4, "category": "comedy"},
+    "punch": {"file": "drama/punch.mp3", "volume": 0.6, "category": "drama"},
+    "glass_break": {"file": "drama/glass_break.mp3", "volume": 0.5, "category": "drama"},
+    "thunder": {"file": "drama/thunder.mp3", "volume": 0.5, "category": "drama"},
+    "dramatic_stinger": {"file": "drama/dramatic_stinger.mp3", "volume": 0.5, "category": "drama"},
+    "whoosh": {"file": "transitions/whoosh.mp3", "volume": 0.4, "category": "transitions"},
+    "ding": {"file": "transitions/ding.mp3", "volume": 0.5, "category": "transitions"},
+    "swoosh": {"file": "transitions/swoosh.mp3", "volume": 0.4, "category": "transitions"},
+    "gasp": {"file": "reactions/gasp.mp3", "volume": 0.5, "category": "reactions"},
+    "crowd_ooh": {"file": "reactions/crowd_ooh.mp3", "volume": 0.5, "category": "reactions"},
+    "record_scratch": {"file": "reactions/record_scratch.mp3", "volume": 0.6, "category": "reactions"},
+    "kakao_alert": {"file": "korean/kakao_alert.mp3", "volume": 0.4, "category": "korean"},
+    "typing": {"file": "korean/typing.mp3", "volume": 0.3, "category": "korean"},
+    "ddiyong": {"file": "korean/ddiyong.mp3", "volume": 0.5, "category": "korean"},
+    "phone_vibrate": {"file": "korean/phone_vibrate.mp3", "volume": 0.3, "category": "korean"},
+    "doorbell": {"file": "korean/doorbell.mp3", "volume": 0.4, "category": "korean"},
+    "cash_register": {"file": "korean/cash_register.mp3", "volume": 0.5, "category": "korean"}
+}

@@ -1,542 +1,663 @@
 #!/usr/bin/env python3
-# 변경 사유: AI 슬롭 방지 + 하루 최대 3개 제한 + TTS 음성 로테이션 + 업로드 스케줄링
-"""youshorts 대량 생산 자동화 스크립트.
+"""
+=============================================================
+🏭 YouTube Shorts 대량 생산 v6.0
+=============================================================
+main.py를 subprocess로 반복 호출하여 숏츠를 자동 대량 생산.
 
-24/7 무인 운영을 위한 영상 대량 생성 스크립트입니다.
-AI 슬롭 방지 조치가 적용됩니다:
-- 하루 최대 3개 생산 제한
-- TTS 음성 로테이션 (3개 음성)
-- 대본 템플릿 5종 랜덤
-- 영상 길이 45~90초 랜덤
-- 최소 4시간 업로드 간격
+v6.0 신규:
+  ─ topics.txt 큐: 라인별 주제를 순차 소화 (완료 시 자동 삭제)
+  ─ stories/ 폴더: 사전 준비된 script.json 자동 소화
+  ─ --tts-engine 전달: auto / elevenlabs / openai / edge
+  ─ --daemon 모드: 크롤링 큐 자동 리필 + 무한 루프
+  ─ 크롤링 소스: 커뮤니티 4소스 (viral 통합)
+
+AI 슬롭 방지:
+  ─ 하루 최대 생산 제한 (기본 10개)
+  ─ TTS 음성 로테이션 (3개 음성)
+  ─ 영상 간 최소 60초 딜레이
+  ─ 24시간 최대 런타임 안전장치
 
 사용법:
-    python mass_produce.py --count 3 --style creative
-    python mass_produce.py --count 1 --topic "퇴사 후 현실"
-    python mass_produce.py --clean-all
+  python mass_produce.py                              # 바이럴 크롤링 3개
+  python mass_produce.py --count 5                    # 5개 생산
+  python mass_produce.py --count 3 --topic "AI 혁명"  # 고정 주제 3개
+  python mass_produce.py --topics-file topics.txt     # 큐 파일에서 주제 소화
+  python mass_produce.py --stories-dir stories/       # script.json 소화
+  python mass_produce.py --daemon                     # 무한 루프 (크롤링 자동)
+  python mass_produce.py --tts-engine elevenlabs      # TTS 엔진 지정
+  python mass_produce.py --delay 180                  # 3분 간격
+  python mass_produce.py --clean                      # 비정상 파일 정리
+=============================================================
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
+import glob
+import io
+import json
 import os
 import random
+import shutil
+import subprocess
 import sys
 import time
-from datetime import datetime
+import traceback
+from datetime import datetime, date
 from pathlib import Path
 
-# 프로젝트 루트를 sys.path에 추가
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root / "src"))
-
-from youshorts.config.settings import get_settings
-from youshorts.core.pipeline import Pipeline, PipelineResult
-from youshorts.utils.logger import setup_logging
+# Windows CP949 인코딩 에러 방지
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # ============================================================
-# TTS 음성 로테이션 (AI 슬롭 방지 - 3개 음성 사용)
+# 설정
 # ============================================================
-_EDGE_TTS_VOICES: list[str] = [
-    "ko-KR-InJoonNeural",   # 남성 (차분한, 기본)
-    "ko-KR-HyunsuNeural",   # 남성 (에너지 있는)
-    "ko-KR-SunHiNeural",    # 여성 (밝고 자연스러운)
+SCRIPT_DIR = Path(__file__).resolve().parent
+PYTHON = sys.executable
+OUTPUT_DIR = SCRIPT_DIR / "output"
+LOG_DIR = SCRIPT_DIR / "logs"
+HISTORY_FILE = SCRIPT_DIR / "data" / "mass_produce_history.json"
+
+# TTS 음성 로테이션 (AI 슬롭 방지 — edge-tts 무료 음성 3개)
+EDGE_TTS_VOICES = [
+    "ko-KR-InJoonNeural",   # 남성 (차분한)
+    "ko-KR-HyunsuNeural",   # 남성 (에너지)
+    "ko-KR-SunHiNeural",    # 여성 (밝은)
 ]
 
-_ELEVENLABS_VOICE_IDS: list[str] = [
-    "pNInz6obpgDQGcFmaJgB",  # Adam (남성, 깊은 목소리)
-    "21m00Tcm4TlvDq8ikWAM",  # Rachel (여성, 부드러운)
-    "ErXwobaYiN019PkySvjV",  # Antoni (남성, 따뜻한)
-]
+# 크롤링 소스 (v6.0: 커뮤니티 4소스 기반)
+VALID_SOURCES = ["viral", "natepann", "instiz", "fmkorea", "dcinside"]
+
 
 # ============================================================
-# 자막 스타일 로테이션 (AI 슬롭 방지)
+# 히스토리 관리 (하루 생산량 추적)
 # ============================================================
-_SUBTITLE_STYLES: list[dict[str, str | int]] = [
-    {"font": "NanumSquareRoundEB", "size_max": 90, "size_min": 70, "color": "white"},
-    {"font": "NanumSquareRoundEB", "size_max": 80, "size_min": 65, "color": "#FFD700"},
-    {"font": "NanumSquareRoundEB", "size_max": 85, "size_min": 68, "color": "#00FFFF"},
-]
+def _load_history() -> dict:
+    """생산 히스토리 로드"""
+    try:
+        if HISTORY_FILE.exists():
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"daily": {}, "total": 0}
 
 
-def _rotate_tts_voice(settings: object, index: int) -> None:
-    """TTS 음성을 로테이션합니다 (AI 슬롭 방지).
-
-    Args:
-        settings: 설정 인스턴스.
-        index: 현재 영상 인덱스.
-    """
-    # edge-tts 음성 로테이션
-    voice = _EDGE_TTS_VOICES[index % len(_EDGE_TTS_VOICES)]
-    object.__setattr__(settings, "tts_voice", voice)
-
-    # ElevenLabs 음성 로테이션
-    el_voice = _ELEVENLABS_VOICE_IDS[index % len(_ELEVENLABS_VOICE_IDS)]
-    object.__setattr__(settings, "elevenlabs_voice_id", el_voice)
-
-    logger = logging.getLogger("youshorts")
-    logger.info("TTS 음성: %s (ElevenLabs: %s)", voice, el_voice[:8] + "...")
+def _save_history(history: dict) -> None:
+    """생산 히스토리 저장"""
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
 
-def _rotate_subtitle_style(settings: object, index: int) -> None:
-    """자막 스타일을 로테이션합니다 (AI 슬롭 방지).
-
-    Args:
-        settings: 설정 인스턴스.
-        index: 현재 영상 인덱스.
-    """
-    style = _SUBTITLE_STYLES[index % len(_SUBTITLE_STYLES)]
-    object.__setattr__(settings, "subtitle_font", style["font"])
-    object.__setattr__(settings, "subtitle_font_size_max", style["size_max"])
-    object.__setattr__(settings, "subtitle_font_size_min", style["size_min"])
-    object.__setattr__(settings, "subtitle_color", style["color"])
+def _get_today_count(history: dict) -> int:
+    """오늘 생산 개수"""
+    today = date.today().isoformat()
+    return history.get("daily", {}).get(today, 0)
 
 
-def _randomize_duration(settings: object) -> None:
-    """영상 길이를 랜덤화합니다 (45~90초, AI 슬롭 방지).
-
-    Args:
-        settings: 설정 인스턴스.
-    """
-    duration = random.randint(45, 90)
-    object.__setattr__(settings, "target_duration", duration)
-
-    logger = logging.getLogger("youshorts")
-    logger.info("영상 목표 길이: %d초 (랜덤)", duration)
+def _increment_today(history: dict) -> None:
+    """오늘 생산 카운트 +1"""
+    today = date.today().isoformat()
+    if "daily" not in history:
+        history["daily"] = {}
+    history["daily"][today] = history["daily"].get(today, 0) + 1
+    history["total"] = history.get("total", 0) + 1
 
 
-def run_single_production(
+# ============================================================
+# topics.txt 큐 관리
+# ============================================================
+def _load_topics_queue(path: str) -> list[str]:
+    """topics.txt에서 주제 목록 로드 (빈 줄/주석 제외)"""
+    topics = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    topics.append(line)
+    except FileNotFoundError:
+        print(f"  ⚠️  {path} 파일 없음")
+    return topics
+
+
+def _pop_topic_from_file(path: str) -> str | None:
+    """topics.txt에서 첫 번째 주제를 가져오고 파일에서 제거"""
+    topics = _load_topics_queue(path)
+    if not topics:
+        return None
+
+    topic = topics[0]
+    remaining = topics[1:]
+
+    # 남은 항목들로 파일 다시 쓰기
+    with open(path, "w", encoding="utf-8") as f:
+        for t in remaining:
+            f.write(t + "\n")
+
+    return topic
+
+
+# ============================================================
+# stories/ 폴더 관리
+# ============================================================
+def _find_story_jsons(stories_dir: str) -> list[str]:
+    """stories/ 폴더에서 처리할 script.json 파일 목록 반환"""
+    pattern = os.path.join(stories_dir, "*.json")
+    files = sorted(glob.glob(pattern))
+    return files
+
+
+def _archive_story(json_path: str) -> None:
+    """처리 완료된 script.json을 stories/_done/으로 이동"""
+    done_dir = os.path.join(os.path.dirname(json_path), "_done")
+    os.makedirs(done_dir, exist_ok=True)
+    dest = os.path.join(done_dir, os.path.basename(json_path))
+    # 중복 방지
+    if os.path.exists(dest):
+        base, ext = os.path.splitext(os.path.basename(json_path))
+        dest = os.path.join(done_dir, f"{base}_{int(time.time())}{ext}")
+    shutil.move(json_path, dest)
+    print(f"  📦 아카이브: {os.path.basename(json_path)} → _done/")
+
+
+# ============================================================
+# 단일 영상 생산
+# ============================================================
+def run_single(
+    source: str,
     topic: str | None,
-    style: str,
+    script_json: str | None,
+    voice: str,
     tts_engine: str,
-    no_pexels: bool,
-    renderer: str | None = None,
-    production_index: int = 0,
-) -> tuple[bool, PipelineResult | None]:
-    """단일 영상 생성을 실행합니다.
-
-    AI 슬롭 방지:
-    - TTS 음성 로테이션
-    - 자막 스타일 로테이션
-    - 영상 길이 랜덤화
+    output_dir: str,
+    index: int,
+) -> tuple[bool, str]:
+    """단일 영상을 생산합니다.
 
     Args:
-        topic: 주제 (None이면 자동 선정).
-        style: 대본 스타일.
-        tts_engine: TTS 엔진 ("enhanced" | "legacy").
-        no_pexels: Pexels 비활성화 여부.
-        renderer: 렌더러 ("shotstack" | "moviepy" | None=auto).
-        production_index: 현재 생산 인덱스 (로테이션용).
+        source: 크롤링 소스 (viral, natepann 등)
+        topic: 수동 주제 (None이면 자동 크롤링)
+        script_json: 사전 준비된 script.json 경로 (None이면 자동 생성)
+        voice: edge-tts 음성
+        tts_engine: TTS 엔진 (auto/elevenlabs/openai/edge)
+        output_dir: 출력 경로
+        index: 현재 인덱스
 
     Returns:
-        (성공 여부, PipelineResult).
+        (성공 여부, 출력 경로 또는 에러 메시지)
     """
-    logger = logging.getLogger("youshorts")
+    mode_label = "📜 script.json" if script_json else (f"📝 주제: {topic}" if topic else f"🌐 크롤링: {source}")
+    print(f"\n{'─' * 60}")
+    print(f"  [{index + 1}] 영상 생산 시작")
+    print(f"  모드: {mode_label}")
+    print(f"  TTS: {tts_engine} | 음성: {voice}")
+    print(f"{'─' * 60}")
 
-    # 주제 자동 선정 (커뮤니티 크롤러 → 폴백 → 수동)
-    source_text = ""
-    if not topic:
-        from youshorts.core.script_generator import select_topic
-        topic_info = select_topic(topic_override=None, style=style)
-        # select_topic()은 dict 반환: {title, body, source}
-        if isinstance(topic_info, dict):
-            topic = topic_info.get("title", "")
-            source_text = topic_info.get("body", "")
-            source_name = topic_info.get("source", "unknown")
-        else:
-            # 호환성: 혹시 str이 반환되면
-            topic = topic_info
-            source_name = "legacy"
+    # 커맨드 구성
+    script = str(SCRIPT_DIR / "main.py")
+    cmd = [PYTHON, script]
 
-    logger.info("=" * 60)
-    logger.info(f"영상 생성 시작: {topic}")
-    if source_text:
-        logger.info(f"  소스: {source_name} ({len(source_text)}자)")
-    logger.info(f"스타일: {style}, TTS: {tts_engine}, 렌더러: {renderer or 'auto'}")
-    logger.info("=" * 60)
+    if script_json:
+        # script.json 모드 (크롤링+Gemini 스킵)
+        cmd.extend(["--script-json", script_json])
+    elif topic:
+        # 주제 지정 모드
+        cmd.extend([
+            "--topic", topic,
+            "--skip-crawl",
+            "--count", "1",
+        ])
+    else:
+        # 자동 크롤링 모드
+        cmd.extend([
+            "--source", source,
+            "--count", "1",
+        ])
+
+    # 공통 옵션
+    cmd.extend([
+        "--voice", voice,
+        "--tts-engine", tts_engine,
+        "--output", output_dir,
+    ])
+
+    start_t = time.time()
 
     try:
-        settings = get_settings()
-
-        # TTS 엔진 오버라이드
-        if tts_engine:
-            object.__setattr__(settings, "tts_engine", tts_engine)
-
-        # 렌더러 오버라이드
-        if renderer:
-            object.__setattr__(settings, "renderer", renderer)
-
-        # AI 슬롭 방지: 로테이션 적용
-        _rotate_tts_voice(settings, production_index)
-        _rotate_subtitle_style(settings, production_index)
-        _randomize_duration(settings)
-
-        pipeline = Pipeline(
-            topic=topic,
-            style=style,
-            no_pexels=no_pexels,
-            renderer=renderer,
-            settings=settings,
-            source_text=source_text,
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=900,  # 15분 타임아웃 (GoAPI Midjourney 폴링 감안)
+            cwd=str(SCRIPT_DIR),
+            encoding="utf-8",
+            errors="replace",
         )
 
-        result = pipeline.run()
+        elapsed = time.time() - start_t
 
-        if result.success:
-            logger.info("=" * 60)
-            logger.info(f"영상 생성 완료: {result.output_path}")
-            logger.info(f"  제목: {result.metadata.get('title', topic)}")
-            logger.info(f"  길이: {result.tts_duration:.1f}초")
-            logger.info(f"  품질: {result.quality_score}/100")
-            logger.info(f"  템플릿: {result.script.get('template_used', '알수없음')}")
-            logger.info("=" * 60)
-            return True, result
+        if result.returncode == 0:
+            print(f"  ✅ 성공! ({elapsed:.1f}초)")
+
+            # stdout에서 MP4 경로 찾기
+            mp4_files = []
+            for line in result.stdout.split("\n"):
+                if ".mp4" in line and ("📁" in line or "output" in line.lower()):
+                    parts = line.strip().split()
+                    for p in parts:
+                        if ".mp4" in p:
+                            mp4_path = p.strip("()")
+                            if os.path.exists(mp4_path):
+                                mp4_files.append(mp4_path)
+
+            if mp4_files:
+                size_mb = os.path.getsize(mp4_files[0]) / 1024 / 1024
+                print(f"  📁 {mp4_files[0]} ({size_mb:.1f}MB)")
+                return True, mp4_files[0]
+            return True, f"완료 ({elapsed:.1f}초)"
         else:
-            logger.error("영상 생성 실패")
-            return False, result
+            print(f"  ❌ 실패 (exit={result.returncode}, {elapsed:.1f}초)")
+            # 에러 출력 마지막 10줄
+            stderr_lines = result.stderr.strip().split("\n")[-10:]
+            for line in stderr_lines:
+                print(f"     {line}")
+            # stdout에서도 에러 힌트 추출
+            stdout_errors = [l for l in result.stdout.split("\n") if "❌" in l or "Error" in l]
+            for line in stdout_errors[-3:]:
+                print(f"     {line.strip()}")
+            return False, f"exit={result.returncode}"
 
-    except KeyboardInterrupt:
-        logger.warning("사용자 중단")
-        raise
+    except subprocess.TimeoutExpired:
+        print(f"  ⏰ 타임아웃 (15분 초과)")
+        return False, "timeout"
     except Exception as e:
-        logger.error(f"영상 생성 실패: {e}", exc_info=True)
-        return False, None
+        print(f"  ❌ 에러: {e}")
+        return False, str(e)
 
 
-def _try_upload(
-    result: PipelineResult,
-    upload_mode: str,
-    video_index: int = 0,
-) -> None:
-    """영상 업로드를 시도합니다.
-
-    Args:
-        result: 파이프라인 결과.
-        upload_mode: "upload" (즉시) 또는 "schedule" (예약).
-        video_index: 영상 순번 (예약 간격 계산용).
-    """
-    _logger = logging.getLogger("youshorts")
-    try:
-        from youshorts.core.youtube_uploader import YouTubeUploader
-
-        uploader = YouTubeUploader()
-        if not uploader.authenticate():
-            _logger.warning("YouTube 인증 실패 - 업로드 스킵")
-            return
-
-        if upload_mode == "schedule":
-            url = uploader.upload_with_schedule(
-                result.output_path,
-                result.metadata,
-                video_index=video_index,
-            )
-        else:
-            url = uploader.upload_short(
-                result.output_path,
-                result.metadata,
-            )
-
-        if url:
-            _logger.info("YouTube 업로드 성공: %s", url)
-        else:
-            _logger.warning("YouTube 업로드 실패 (스킵)")
-    except Exception as e:
-        _logger.warning("YouTube 업로드 에러 (스킵): %s", e)
-
-
+# ============================================================
+# 대량 생산 메인 루프
+# ============================================================
 def mass_produce(
-    count: int | None,
-    style: str,
+    count: int,
+    source: str,
+    topic: str | None,
+    topics_file: str | None,
+    stories_dir: str | None,
     tts_engine: str,
-    no_pexels: bool,
     delay: int,
     max_retries: int,
-    topic_override: str | None = None,
-    renderer: str | None = None,
-    max_per_day: int = 3,
-    upload_mode: str = "none",
+    max_per_day: int,
+    daemon: bool,
 ) -> None:
-    """대량 생산을 실행합니다.
+    """대량 생산 메인 로직.
 
-    AI 슬롭 방지 조치:
-    - 하루 최대 3개 제한 (기본값)
-    - TTS 음성 로테이션
-    - 자막 스타일 로테이션
-    - 영상 길이 랜덤화
-    - 최소 4시간 업로드 간격
-
-    Args:
-        count: 생성할 영상 개수 (None이면 무한).
-        style: 대본 스타일.
-        tts_engine: TTS 엔진.
-        no_pexels: Pexels 비활성화 여부.
-        delay: 영상 간 대기 시간 (초).
-        max_retries: 실패 시 최대 재시도 횟수.
-        topic_override: 고정 주제 (None이면 자동 선정).
-        renderer: 렌더러 ("shotstack" | "moviepy" | None=auto).
-        max_per_day: 하루 최대 생산 개수 (기본 3).
+    우선순위:
+    1. stories_dir → script.json 소화
+    2. topics_file → topics.txt 큐 소화
+    3. topic → 고정 주제 반복
+    4. source → 자동 크롤링
     """
-    logger = logging.getLogger("youshorts")
+    history = _load_history()
+    today_count = _get_today_count(history)
 
-    # 하루 최대 생산 제한 체크
-    from youshorts.core.script_generator import check_daily_limit
-    if not check_daily_limit(max_per_day=max_per_day):
-        logger.warning("하루 최대 생산 제한 도달 - 내일 다시 실행하세요")
+    # 하루 제한 체크
+    remaining = max_per_day - today_count
+    if remaining <= 0:
+        print(f"⚠️  오늘 이미 {today_count}개 생산 (최대 {max_per_day}개) → 내일 다시 실행")
         return
 
-    logger.info("=" * 60)
-    logger.info("youshorts 대량 생산 시작")
-    logger.info(f"목표: {count if count else '무한'}개, 스타일: {style}, TTS: {tts_engine}")
-    logger.info(f"렌더러: {renderer or 'auto'}")
-    logger.info(f"하루 최대: {max_per_day}개 (AI 슬롭 방지)")
-    if topic_override:
-        logger.info(f"고정 주제: {topic_override}")
-    logger.info(f"재시도: {max_retries}회, 지연: {delay}초")
-    logger.info("=" * 60)
+    output_dir = str(OUTPUT_DIR)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── 작업 큐 구성 ──
+    job_queue: list[dict] = []
+
+    # 1순위: stories/ 폴더의 script.json
+    if stories_dir:
+        story_files = _find_story_jsons(stories_dir)
+        for sf in story_files:
+            job_queue.append({"mode": "story", "script_json": sf, "topic": None})
+        if story_files:
+            print(f"  📚 stories/ 큐: {len(story_files)}개 script.json 발견")
+
+    # 2순위: topics.txt 큐
+    if topics_file and os.path.exists(topics_file):
+        topics_list = _load_topics_queue(topics_file)
+        for t in topics_list:
+            job_queue.append({"mode": "topic", "script_json": None, "topic": t})
+        if topics_list:
+            print(f"  📋 topics.txt 큐: {len(topics_list)}개 주제 발견")
+
+    # 3순위: 고정 주제 or 자동 크롤링
+    if not job_queue:
+        if topic:
+            for _ in range(count):
+                job_queue.append({"mode": "topic", "script_json": None, "topic": topic})
+        else:
+            for _ in range(count):
+                job_queue.append({"mode": "crawl", "script_json": None, "topic": None})
+
+    # 하루 제한 적용
+    actual_count = min(len(job_queue), remaining)
+    if actual_count < len(job_queue):
+        print(f"  ⚠️  큐 {len(job_queue)}개 → {actual_count}개로 제한 (오늘 잔여: {remaining}개)")
+    job_queue = job_queue[:actual_count]
+
+    print(f"\n{'=' * 60}")
+    print(f"🏭 YouTube Shorts 대량 생산 v6.0")
+    print(f"{'=' * 60}")
+    print(f"  목표: {actual_count}개")
+    print(f"  소스: {source}")
+    print(f"  TTS: {tts_engine}")
+    print(f"  딜레이: {delay}초")
+    print(f"  재시도: {max_retries}회")
+    print(f"  하루 제한: {max_per_day}개 (오늘: {today_count}개 완료)")
+    if daemon:
+        print(f"  🔄 데몬 모드: 큐 소진 시 크롤링 자동 리필")
+    print(f"{'=' * 60}")
 
     produced = 0
     failed = 0
-    infinite_mode = count is None
-
-    # 실제 count를 하루 최대로 제한
-    if count is not None:
-        from youshorts.core.script_generator import _get_today_production_count
-        settings = get_settings()
-        today_count = _get_today_production_count(settings)
-        remaining = max_per_day - today_count
-        if count > remaining:
-            logger.warning(
-                "요청 %d개 → %d개로 제한 (오늘 이미 %d개 생산)",
-                count, remaining, today_count,
-            )
-            count = max(remaining, 0)
-            if count == 0:
-                return
+    results = []
+    MAX_RUNTIME = 24 * 3600  # 24시간
+    run_start = time.time()
 
     try:
-        while infinite_mode or produced < count:
-            # 매 반복마다 하루 제한 재확인
-            if not check_daily_limit(max_per_day=max_per_day):
-                logger.info("하루 최대 생산 제한 도달 - 생산 종료")
+        job_idx = 0
+        while job_idx < len(job_queue):
+            # 런타임 안전장치
+            if time.time() - run_start > MAX_RUNTIME:
+                print(f"\n⚠️  24시간 최대 런타임 초과 → 안전 종료")
                 break
 
-            iteration = produced + failed + 1
-            topic = topic_override  # None이면 run_single_production에서 자동 선정
+            # 하루 제한 실시간 체크 (날짜 넘어갈 수 있으므로)
+            history = _load_history()
+            if _get_today_count(history) >= max_per_day:
+                print(f"\n⚠️  오늘 하루 제한 도달 ({max_per_day}개) → 종료")
+                break
 
-            logger.info(f"\n[{iteration}번째 시도]")
+            job = job_queue[job_idx]
 
-            # 재시도 로직
+            # TTS 음성 로테이션
+            voice = EDGE_TTS_VOICES[job_idx % len(EDGE_TTS_VOICES)]
+
+            # 재시도 루프
             success = False
             for attempt in range(1, max_retries + 1):
                 if attempt > 1:
-                    logger.warning(f"재시도 {attempt}/{max_retries}...")
+                    retry_delay = min(delay * attempt, 300)
+                    print(f"  🔄 재시도 {attempt}/{max_retries} ({retry_delay}초 후)")
+                    time.sleep(retry_delay)
 
-                success, result = run_single_production(
-                    topic=topic,
-                    style=style,
-                    tts_engine=tts_engine,
-                    no_pexels=no_pexels,
-                    renderer=renderer,
-                    production_index=produced + failed,
-                )
+                try:
+                    success, result_info = run_single(
+                        source=source,
+                        topic=job["topic"],
+                        script_json=job.get("script_json"),
+                        voice=voice,
+                        tts_engine=tts_engine,
+                        output_dir=output_dir,
+                        index=job_idx,
+                    )
+                except Exception as e:
+                    print(f"  ❌ run_single 예외: {e}")
+                    traceback.print_exc()
+                    success = False
+                    result_info = str(e)
 
                 if success:
                     produced += 1
-                    # YouTube 업로드 (옵션)
-                    if upload_mode != "none" and result and result.success:
-                        _try_upload(result, upload_mode, produced - 1)
-                    break
+                    _increment_today(history)
+                    _save_history(history)
+                    results.append({
+                        "index": job_idx + 1,
+                        "status": "success",
+                        "mode": job["mode"],
+                        "info": result_info,
+                    })
 
-                if attempt < max_retries:
-                    retry_delay = min(delay * attempt, 300)
-                    logger.warning(f"{retry_delay}초 후 재시도...")
-                    time.sleep(retry_delay)
+                    # story 모드 → 완료된 json 아카이브
+                    if job["mode"] == "story" and job.get("script_json"):
+                        _archive_story(job["script_json"])
+
+                    # topics.txt 모드 → 처리된 주제 파일에서 제거
+                    if job["mode"] == "topic" and topics_file:
+                        _pop_topic_from_file(topics_file)
+
+                    break
 
             if not success:
                 failed += 1
-                logger.error(f"{max_retries}회 재시도 후에도 실패")
+                results.append({
+                    "index": job_idx + 1,
+                    "status": "failed",
+                    "mode": job["mode"],
+                    "info": result_info,
+                })
+                print(f"  💀 {max_retries}회 재시도 실패")
 
-            # 진행 상황 출력
-            logger.info(f"\n현재 진행: 성공 {produced}개, 실패 {failed}개")
+            # 진행 상황
+            remain = len(job_queue) - job_idx - 1
+            print(f"\n  📊 진행: {produced}개 성공 / {failed}개 실패 / {remain}개 남음")
 
-            # 다음 영상까지 대기 (최소 4시간 간격 옵션)
-            if infinite_mode or produced < count:
-                actual_delay = max(delay, 60)  # 최소 1분
-                logger.info(f"{actual_delay}초 대기 중...")
+            # 딜레이 (마지막 아이템 제외)
+            if job_idx < len(job_queue) - 1:
+                actual_delay = max(delay, 60)
+                print(f"  ⏳ {actual_delay}초 대기...")
                 time.sleep(actual_delay)
 
+            job_idx += 1
+
+            # ── 데몬 모드: 큐 소진 시 크롤링으로 자동 리필 ──
+            if daemon and job_idx >= len(job_queue):
+                # 하루 제한 체크
+                history = _load_history()
+                if _get_today_count(history) >= max_per_day:
+                    print(f"\n⚠️  데몬: 하루 제한 도달 → 다음 날까지 1시간 대기...")
+                    time.sleep(3600)
+                    continue
+
+                print(f"\n🔄 데몬: 큐 소진 → 크롤링 자동 리필 (3개)")
+                for _ in range(3):
+                    job_queue.append({"mode": "crawl", "script_json": None, "topic": None})
+
+                # topics.txt 리로드 (외부에서 추가될 수 있음)
+                if topics_file and os.path.exists(topics_file):
+                    new_topics = _load_topics_queue(topics_file)
+                    for t in new_topics:
+                        job_queue.append({"mode": "topic", "script_json": None, "topic": t})
+                    if new_topics:
+                        print(f"  📋 topics.txt에서 {len(new_topics)}개 주제 추가")
+
+                # stories/ 리로드
+                if stories_dir:
+                    new_stories = _find_story_jsons(stories_dir)
+                    for sf in new_stories:
+                        # 이미 큐에 있는지 체크
+                        existing = {j.get("script_json") for j in job_queue}
+                        if sf not in existing:
+                            job_queue.append({"mode": "story", "script_json": sf, "topic": None})
+                    if new_stories:
+                        print(f"  📚 stories/에서 {len(new_stories)}개 script.json 추가")
+
     except KeyboardInterrupt:
-        logger.warning("\n\n사용자 중단 (Ctrl+C)")
-    finally:
-        logger.info("=" * 60)
-        logger.info("대량 생산 종료")
-        logger.info(f"총 성공: {produced}개, 실패: {failed}개")
-        if produced > 0:
-            success_rate = produced / (produced + failed) * 100
-            logger.info(f"성공률: {success_rate:.1f}%")
-        logger.info("=" * 60)
+        print(f"\n\n⚠️  사용자 중단 (Ctrl+C)")
+
+    # ── 최종 리포트 ──
+    elapsed = time.time() - run_start
+    print(f"\n{'=' * 60}")
+    print(f"📊 대량 생산 최종 리포트")
+    print(f"{'=' * 60}")
+    print(f"  ⏱️  총 소요: {elapsed:.0f}초 ({elapsed/60:.1f}분)")
+    print(f"  ✅ 성공: {produced}개")
+    print(f"  ❌ 실패: {failed}개")
+    if produced + failed > 0:
+        rate = produced / (produced + failed) * 100
+        print(f"  📈 성공률: {rate:.0f}%")
+    print(f"  📁 출력: {output_dir}")
+    print(f"{'=' * 60}")
+
+    # 결과 로그 저장
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"mass_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "version": "v6.0",
+            "timestamp": datetime.now().isoformat(),
+            "count_requested": actual_count,
+            "produced": produced,
+            "failed": failed,
+            "elapsed_sec": round(elapsed, 1),
+            "source": source,
+            "tts_engine": tts_engine,
+            "daemon": daemon,
+            "results": results,
+        }, f, ensure_ascii=False, indent=2)
+    print(f"  📋 로그: {log_path}")
 
 
+# ============================================================
+# 🧹 정리 유틸
+# ============================================================
+def clean_output(clean_all: bool = False) -> None:
+    """비정상 출력 파일 정리"""
+    output_dir = str(OUTPUT_DIR)
+    if not os.path.exists(output_dir):
+        print("📁 output/ 디렉토리 없음")
+        return
+
+    removed = 0
+
+    # 비정상 MP4 삭제 (0KB 또는 100KB 미만)
+    for mp4 in glob.glob(os.path.join(output_dir, "*.mp4")):
+        size = os.path.getsize(mp4)
+        if size < 100 * 1024:  # 100KB 미만 → 비정상
+            os.remove(mp4)
+            print(f"  🗑️  삭제: {os.path.basename(mp4)} ({size/1024:.0f}KB)")
+            removed += 1
+
+    if clean_all:
+        # 임시 작업 디렉토리 삭제
+        for work in glob.glob(os.path.join(output_dir, "_work_*")):
+            if os.path.isdir(work):
+                shutil.rmtree(work, ignore_errors=True)
+                print(f"  🗑️  삭제: {os.path.basename(work)}/")
+                removed += 1
+
+        # __pycache__ 삭제
+        for cache in glob.glob(os.path.join(str(SCRIPT_DIR), "**/__pycache__"), recursive=True):
+            if os.path.isdir(cache):
+                shutil.rmtree(cache, ignore_errors=True)
+                removed += 1
+
+        # _screenshots 삭제
+        ss_dir = os.path.join(output_dir, "_screenshots")
+        if os.path.isdir(ss_dir):
+            shutil.rmtree(ss_dir, ignore_errors=True)
+            removed += 1
+
+    print(f"\n  정리 완료: {removed}개 항목 삭제")
+
+
+# ============================================================
+# CLI
+# ============================================================
 def main() -> None:
-    """메인 실행 함수."""
     parser = argparse.ArgumentParser(
-        description="youshorts 대량 생산 자동화 (AI 슬롭 방지 적용)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="🏭 YouTube Shorts 대량 생산 v6.0",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+사용 예시:
+  python mass_produce.py                                 # 바이럴 크롤링 3개
+  python mass_produce.py --count 5                       # 5개 생산
+  python mass_produce.py --count 3 --topic "AI 혁명"     # 고정 주제 3개
+  python mass_produce.py --topics-file topics.txt        # 큐 파일에서 순차 소화
+  python mass_produce.py --stories-dir stories/          # script.json 소화
+  python mass_produce.py --daemon                        # 무한 루프 데몬
+  python mass_produce.py --tts-engine elevenlabs         # TTS 엔진 지정
+  python mass_produce.py --clean                         # 비정상 파일 정리
+  python mass_produce.py --clean-all                     # 전체 정리
+        """
     )
 
-    parser.add_argument(
-        "-c", "--count",
-        type=int,
-        default=None,
-        help="생성할 영상 개수 (미지정 시 무한, 하루 최대 3개 제한)",
-    )
+    prod = parser.add_argument_group("🏭 생산")
+    prod.add_argument("-c", "--count", type=int, default=3,
+                      help="생성할 영상 개수 (기본 3)")
+    prod.add_argument("--source", default="viral",
+                      choices=VALID_SOURCES,
+                      help="크롤링 소스 (기본: viral)")
+    prod.add_argument("-t", "--topic", default=None,
+                      help="영상 주제 (미지정 시 자동 선정)")
+    prod.add_argument("--topics-file", default=None,
+                      help="주제 큐 파일 경로 (라인별 1주제, 처리 후 자동 삭제)")
+    prod.add_argument("--stories-dir", default=None,
+                      help="사전 준비된 script.json 폴더 (처리 후 _done/으로 이동)")
 
-    parser.add_argument(
-        "-s", "--style",
-        choices=["creative", "humorous", "emotional", "expert", "analytical", "community"],
-        default="creative",
-        help="대본 스타일",
-    )
+    tts = parser.add_argument_group("🔊 TTS")
+    tts.add_argument("--tts-engine", default="auto",
+                     choices=["auto", "elevenlabs", "openai", "edge"],
+                     help="TTS 엔진 (기본: auto = ElevenLabs→OpenAI→edge)")
 
-    parser.add_argument(
-        "-t", "--topic",
-        type=str,
-        default=None,
-        help="영상 주제 (미지정 시 트렌드 자동 선정)",
-    )
+    ctrl = parser.add_argument_group("⚙️  제어")
+    ctrl.add_argument("-d", "--delay", type=int, default=60,
+                      help="영상 간 대기 시간 초 (기본 60, 최소 60)")
+    ctrl.add_argument("--max-retries", type=int, default=3,
+                      help="실패 시 최대 재시도 (기본 3)")
+    ctrl.add_argument("--max-per-day", type=int, default=10,
+                      help="하루 최대 생산 (기본 10)")
+    ctrl.add_argument("--daemon", action="store_true",
+                      help="무한 루프 데몬 모드 (큐 소진 시 크롤링 자동 리필)")
 
-    parser.add_argument(
-        "--tts-engine",
-        choices=["enhanced", "legacy"],
-        default="enhanced",
-        help="TTS 엔진 (enhanced: 고품질 유료 / legacy: 무료)",
-    )
-
-    parser.add_argument(
-        "--no-pexels",
-        action="store_true",
-        help="Pexels 비활성화 (그라데이션 배경 사용)",
-    )
-
-    parser.add_argument(
-        "--renderer",
-        choices=["shotstack", "moviepy", "auto", "ffmpeg"],
-        default="auto",
-        help="렌더러 선택 (auto: FFmpeg→MoviePy 폴백 / ffmpeg: FFmpeg 전용 / moviepy: MoviePy 전용 / shotstack: 클라우드)",
-    )
-
-    parser.add_argument(
-        "-d", "--delay",
-        type=int,
-        default=60,
-        help="영상 간 대기 시간 (초, 최소 60초)",
-    )
-
-    parser.add_argument(
-        "--max-retries",
-        type=int,
-        default=3,
-        help="실패 시 최대 재시도 횟수",
-    )
-
-    parser.add_argument(
-        "--max-per-day",
-        type=int,
-        default=3,
-        help="하루 최대 생산 개수 (AI 슬롭 방지, 기본 3개)",
-    )
-
-    parser.add_argument(
-        "--schedule-interval",
-        type=int,
-        default=14400,
-        help="업로드 간격 (초, 기본 4시간=14400초)",
-    )
-
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="상세 로그 출력 (DEBUG 레벨)",
-    )
-
-    # ── YouTube 업로드 옵션 ──
-    upload_group = parser.add_mutually_exclusive_group()
-    upload_group.add_argument(
-        "--upload",
-        action="store_true",
-        default=False,
-        help="생성 즉시 YouTube 업로드",
-    )
-    upload_group.add_argument(
-        "--schedule",
-        action="store_true",
-        default=False,
-        help="4시간 간격 예약 업로드",
-    )
-    upload_group.add_argument(
-        "--no-upload",
-        action="store_true",
-        default=True,
-        help="생성만, 업로드 안 함 (기본값)",
-    )
-
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="비정상 MP4 파일만 삭제 (30MB 미만, 30초 미만, 0KB)",
-    )
-
-    parser.add_argument(
-        "--clean-all",
-        action="store_true",
-        help="비정상 파일 + 임시파일(_work_*, __pycache__, temp/) 전부 삭제",
-    )
+    util = parser.add_argument_group("🧹 정리")
+    util.add_argument("--clean", action="store_true",
+                      help="비정상 파일(100KB 미만 MP4) 삭제")
+    util.add_argument("--clean-all", action="store_true",
+                      help="비정상 + 임시파일 전부 삭제")
 
     args = parser.parse_args()
 
-    # 로깅 설정
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    settings = get_settings()
-    setup_logging(level=log_level, log_dir=settings.logs_dir)
-
-    # --clean 또는 --clean-all 모드
+    # 정리 모드
     if args.clean or args.clean_all:
-        from youshorts.utils.file_cleaner import CleanupManager
-        cleaner = CleanupManager(settings=settings)
-        result = cleaner.clean_all()
-        if args.clean_all:
-            cleaner2 = CleanupManager(settings=settings)
-            result2 = cleaner2.clean_temp()
+        clean_output(clean_all=args.clean_all)
         return
 
-    # 스케줄링 간격이 delay보다 크면 delay를 스케줄링 간격으로 설정
-    delay = max(args.delay, 60)
-    if args.schedule_interval > delay and args.count and args.count > 1:
-        delay = args.schedule_interval
-        logging.getLogger("youshorts").info(
-            "업로드 간격 적용: %d초 (%.1f시간)", delay, delay / 3600,
-        )
+    # topics.txt 기본 경로 자동 탐색
+    topics_file = args.topics_file
+    if topics_file is None:
+        default_topics = SCRIPT_DIR / "topics.txt"
+        if default_topics.exists():
+            topics_file = str(default_topics)
+            print(f"  📋 자동 감지: {topics_file}")
 
-    # 업로드 모드 결정
-    upload_mode = "none"
-    if args.upload:
-        upload_mode = "upload"
-    elif args.schedule:
-        upload_mode = "schedule"
+    # stories/ 기본 경로 자동 탐색
+    stories_dir = args.stories_dir
+    if stories_dir is None:
+        default_stories = SCRIPT_DIR / "stories"
+        if default_stories.exists() and any(default_stories.glob("*.json")):
+            stories_dir = str(default_stories)
+            print(f"  📚 자동 감지: {stories_dir}")
 
-    # 대량 생산 실행
+    # 대량 생산
     mass_produce(
         count=args.count,
-        style=args.style,
+        source=args.source,
+        topic=args.topic,
+        topics_file=topics_file,
+        stories_dir=stories_dir,
         tts_engine=args.tts_engine,
-        no_pexels=args.no_pexels,
-        delay=delay,
+        delay=args.delay,
         max_retries=args.max_retries,
-        topic_override=args.topic,
-        renderer=args.renderer if args.renderer != "auto" else None,
         max_per_day=args.max_per_day,
-        upload_mode=upload_mode,
+        daemon=args.daemon,
     )
 
 

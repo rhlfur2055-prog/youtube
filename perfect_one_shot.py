@@ -21,7 +21,6 @@ import random
 import re
 import subprocess
 import sys
-import tempfile
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -86,8 +85,9 @@ class Config:
     MIN_QUALITY_SCORE = 80
     MAX_RETRY = 5
 
-    # ── AI 슬롭 금지어 ──
+    # ── AI 슬롭 금지어 (대폭 확장) ──
     AI_SLOP_WORDS = [
+        # 격식체/뉴스체
         "흥미롭", "놀라운", "충격적", "심층", "탐구", "여정",
         "알아보겠", "살펴보겠", "함께 알아", "그렇다면",
         "~인 셈이다", "~라 할 수 있", "결론적으로",
@@ -96,10 +96,31 @@ class Config:
         "주목해야", "깊이 있는", "의미 있는", "다양한 측면",
         "시사하는 바", "귀추가 주목", "전문가들은", "관계자에 따르면",
         "이목이 집중", "화제를 모으", "논란이 되고",
+        # AI 특유의 과잉 서술
+        "매력적인", "인상적인", "독보적인", "혁신적인",
+        "획기적인", "압도적인", "경이로운", "놀랍게도",
+        "흥미진진", "감탄을 자아", "눈길을 끄",
+        # AI 특유의 연결어
+        "그뿐만 아니라", "이에 더해", "나아가", "더불어",
+        "한 걸음 더", "이어서", "덧붙이자면",
+        # AI 특유의 마무리
+        "되새겨 보", "돌아보면", "곰곰이 생각",
+        "깊은 울림", "큰 교훈", "시사하는 점",
+        # 격식 높임 (숏츠 부적합)
+        "하겠습니다", "드리겠습니다", "말씀드리",
+        "되겠습니다", "되시겠습니까",
     ]
 
     # ── 생산 한도 ──
     MAX_PER_DAY = 10
+
+    # ── 이모지 패턴 ──
+    EMOJI_PATTERN = re.compile(
+        "[😀-🙏🌀-🗿"
+        "🚀-🛿🇠-🇿"
+        "✂-➰︀-️"
+        "🤀-🧿🨀-🩯]"
+    )
 
     # ── YouTube ──
     YOUTUBE_PRIVACY = "public"
@@ -132,9 +153,24 @@ class Config:
         # 커뮤니티 잡글 (공지/광고/모집/질문)
         "공지", "통합", "체험단", "모집", "이벤트", "광고", "제휴",
         "스포", "질문드립니다", "질문있습니다", "문의", "안내",
+        "구인", "구직", "팝니다", "삽니다", "한줄평", "설문",
         # 숏츠 부적합
-        "밥상", "명절", "설날", "추석", "시어머니", "며느리",
-        "택시", "심쿵", "로맨스", "연애", "고백",
+        "밥상", "명절", "시어머니", "며느리",
+        "택시", "심쿵", "로맨스",
+        # 시즌/명절 이슈 (지난 이슈 배제)
+        "설날", "새해", "추석", "한가위", "크리스마스", "성탄절",
+        "발렌타인", "화이트데이", "어버이날", "스승의날",
+        "졸업식", "입학식", "수능", "수능날",
+        # 광고/스팸
+        "텔레그램", "단톡방", "카톡방", "오픈채팅",
+        "비트코인", "가상화폐", "코인", "NFT",
+        "투자", "수익률", "원금보장",
+        "무료나눔", "선착순", "할인코드",
+        # 의료/건강 허위정보 위험
+        "암 치료", "특효약", "민간요법", "자가진단",
+        "병원에서 안 알려주는", "의사가 숨기는",
+        # 성인/부적절
+        "후방주의", "19금", "은꼴",
     ]
 
     # 바이럴 신호 키워드 (브랜드명 제거, 반응/감정/행동 키워드 위주)
@@ -145,6 +181,63 @@ class Config:
         "밈", "챌린지", "핫", "터짐", "난리",
         "비교", "랭킹", "순위", "VS", "TOP",
         "꿀팁", "해봄", "써봄", "사봄", "가봄",
+        # 2030 타겟 부스트
+        "월급", "퇴사", "야근", "자취", "월세", "전세",
+        "사회초년생", "직장상사", "꼰대", "MZ", "워라밸",
+        "연봉", "이직", "알바", "면접", "취준",
+        "썸", "소개팅", "결혼", "축의금", "청첩장",
+        "연애", "재테크", "고백", "적금", "청약",
+    ]
+
+    # ── 숏츠 폭발력 카테고리 (조회수 100만+ 실적 기반) ──
+    VIRAL_CATEGORY_KEYWORDS = {
+        # Tier S: 100만뷰 확률 높은 카테고리
+        "공포_미스터리": {
+            "keywords": ["공포", "귀신", "심령", "미스터리", "소름", "무서운", "괴담",
+                          "호러", "폐건물", "도시전설", "납골당", "저주"],
+            "boost": 50000,
+        },
+        "놀라운_사실": {
+            "keywords": ["충격", "알고보니", "진실", "몰랐던", "비밀", "반전",
+                          "실화", "레전드", "역대급", "미쳤", "경악"],
+            "boost": 45000,
+        },
+        "밈_유머": {
+            "keywords": ["밈", "짤", "ㅋㅋ", "웃긴", "개웃", "존웃", "킹받",
+                          "빡침", "어이없", "황당", "해프닝", "웃참"],
+            "boost": 40000,
+        },
+        "비교_랭킹": {
+            "keywords": ["비교", "VS", "랭킹", "순위", "TOP", "1위",
+                          "최고", "최악", "차이", "어떤게", "뭐가"],
+            "boost": 40000,
+        },
+        "꿀팁_라이프핵": {
+            "keywords": ["꿀팁", "방법", "노하우", "핵꿀", "개꿀", "팁",
+                          "가성비", "알뜰", "저렴", "아끼는", "절약"],
+            "boost": 35000,
+        },
+        "문화충격_반응": {
+            "keywords": ["외국인", "문화충격", "반응", "한국", "해외", "리액션",
+                          "충격받", "놀란", "차이점", "비교문화"],
+            "boost": 45000,
+        },
+        "게임_애니": {
+            "keywords": ["게임", "롤", "발로란트", "마크", "원신", "애니",
+                          "원피스", "귀멸", "나루토", "주술회전", "진격"],
+            "boost": 35000,
+        },
+    }
+
+    # ── 숏츠 부적합 감점 카테고리 (조회수 낮은 유형) ──
+    BORING_PENALTY_PATTERNS = [
+        # 일상 잡담 (숏츠에서 안 터짐)
+        (r"남친|여친|남자친구|여자친구|설거지|시댁|시어머니|결혼식", -30000, "연애/결혼 일상"),
+        (r"회사|직장|퇴근|출근|야근|상사|선배|신입", -20000, "직장 일상"),
+        (r"다이어트|식단|운동|헬스", -15000, "다이어트 일상"),
+        (r"카페|맛집|디저트|빵집", -15000, "카페/맛집 일상"),
+        # 연예 단순 가십 (깊이 없는 것)
+        (r"열애|결별|소속사|컴백|앨범|팬싸", -10000, "연예 단순뉴스"),
     ]
 
     # ── 주제별 배경 모드 ──
@@ -223,7 +316,8 @@ def check_daily_limit() -> bool:
             return False
         print(f"  오늘 생산: {today_count}/{Config.MAX_PER_DAY}개")
         return True
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+        logger.warning(f"일일 한도 확인 실패: {e}")
         return True
 
 
@@ -333,8 +427,8 @@ class TrendCollector:
                             "source": "naver_realtime",
                             "score": (15 - i) * 5000,
                         })
-        except Exception:
-            pass
+        except (ConnectionError, TimeoutError, Exception) as e:
+            logger.warning(f"요청 실패: {e}")
 
         # 2) 네이버 쇼핑 인기 검색어 (소비 트렌드 = 쇼츠 주제 적합)
         try:
@@ -354,8 +448,8 @@ class TrendCollector:
                             "source": "naver_shopping",
                             "score": (10 - i) * 4000,
                         })
-        except Exception:
-            pass
+        except (ConnectionError, TimeoutError, Exception) as e:
+            logger.warning(f"요청 실패: {e}")
 
         if results:
             print(f"  [OK] 네이버 실시간: {len(results)}개 수집")
@@ -406,7 +500,7 @@ class TrendCollector:
         for comm in communities:
             try:
                 resp = requests.get(
-                    comm["url"], timeout=8, headers=headers, verify=False,
+                    comm["url"], timeout=8, headers=headers,
                 )
                 if resp.status_code != 200:
                     continue
@@ -426,10 +520,30 @@ class TrendCollector:
                     if href and not href.startswith("http"):
                         href = comm["base_url"] + href
 
+                    # ── 참여도 추출 (조회수/댓글수/추천수) ──
+                    engagement_score = 0
+                    parent = t.find_parent("tr") or t.find_parent("div") or t.find_parent("li")
+                    if parent:
+                        parent_text = parent.get_text()
+                        # 조회수 (일반적인 패턴)
+                        view_m = re.search(r'(\d{1,3}(?:,\d{3})*)\s*(?:조회|읽음|hit)', parent_text)
+                        if view_m:
+                            engagement_score += int(view_m.group(1).replace(",", "")) * 0.01
+                        # 댓글수 (숫자 + [] 패턴)
+                        cmt_m = re.search(r'\[(\d+)\]', parent_text)
+                        if cmt_m:
+                            engagement_score += int(cmt_m.group(1)) * 1.5
+                        # 추천수
+                        rec_m = re.search(r'(\d+)\s*(?:추천|공감|좋아요)', parent_text)
+                        if rec_m:
+                            engagement_score += int(rec_m.group(1)) * 2.0
+
+                    # 위치 기반 + 참여도 복합 점수
+                    base_score = (10 - i) * 3000
                     results.append({
                         "keyword": text,
                         "source": f"community_{comm['name']}",
-                        "score": (10 - i) * 3000,
+                        "score": base_score + engagement_score,
                         "url": href,
                         "body": "",
                     })
@@ -457,7 +571,7 @@ class TrendCollector:
         }
 
         try:
-            resp = requests.get(url, timeout=8, headers=headers, verify=False)
+            resp = requests.get(url, timeout=8, headers=headers)
             if resp.status_code != 200:
                 return ""
 
@@ -475,8 +589,8 @@ class TrendCollector:
                     if len(text) > 30:
                         return text[:2000]
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"본문 크롤링 실패: {e}")
 
         return ""
 
@@ -551,6 +665,28 @@ class TrendCollector:
             boost_count = sum(1 for bk in Config.TOPIC_BOOST_KEYWORDS if bk in kw)
             if boost_count:
                 t["score"] += boost_count * 20000
+
+        # ── 숏츠 폭발력 카테고리 부스트 (가장 중요!) ──
+        for t in filtered:
+            kw = t["keyword"]
+            best_cat = ""
+            best_boost = 0
+            for cat_name, cat_info in Config.VIRAL_CATEGORY_KEYWORDS.items():
+                match_count = sum(1 for ck in cat_info["keywords"] if ck in kw)
+                if match_count > 0 and cat_info["boost"] > best_boost:
+                    best_boost = cat_info["boost"]
+                    best_cat = cat_name
+            if best_boost:
+                t["score"] += best_boost
+                t["_viral_category"] = best_cat
+
+        # ── 숏츠 부적합 감점 (일상 잡담/가십 걸러내기) ──
+        for t in filtered:
+            kw = t["keyword"]
+            for pat, penalty, label in Config.BORING_PENALTY_PATTERNS:
+                if re.search(pat, kw):
+                    t["score"] += penalty  # 음수값이므로 감점
+                    break
 
         # ── 중복 키워드 합산 (URL/body 보존) ──
         merged = {}
@@ -645,26 +781,29 @@ class NewsCollector:
 
 
 # ============================================================================
-# STEP 2: 대본 생성 (Gemini → OpenAI 폴백)
+# STEP 2: 대본 생성 (Gemini 2.0 Flash — 무료)
 # ============================================================================
 class ScriptGenerator:
     """
-    대본 생성: Gemini 2.0 Flash → OpenAI 폴백
+    대본 생성: Gemini 2.0 Flash (무료, 유료 폴백 제거)
     검증된 프롬프트 + 커뮤니티 본문 기반 + 품질 85점 이상
     """
 
     # ── 원글 있을 때: 팩트 기반 나레이션 ──
-    PROMPT_WITH_SOURCE = """유튜브 쇼츠 나레이션 대본을 만들어.
+    PROMPT_WITH_SOURCE = """유튜브 숏츠 100만뷰 나레이션 대본을 만들어.
 
-역할: 20대 한국 남자가 친구한테 얘기하듯이 말하는 느낌.
+역할: 20대 한국 남자가 친구한테 "야 이거 봐봐" 하면서 얘기하는 느낌.
 
 규칙:
-1. [원글 내용]의 핵심 팩트를 전달해. 없는 내용 지어내지 마.
-2. 문장 길이는 자유롭게 — 짧은 것(5자)도 긴 것(25자)도 섞어서 리듬감 있게.
-3. 전체 15~22문장. 250~400자.
-4. 첫 문장은 주제를 바로 꺼내. 훅 잡는 질문이나 핵심 팩트로 시작.
-5. 마지막은 자연스럽게 끝내. 억지 구독유도 하지 마.
-6. 금지: "여러분", 실명, **볼드**, 이모지, "구독", "좋아요"
+1. [원글 내용]의 핵심 팩트를 전달해. 없는 내용 절대 지어내지 마.
+2. 원글에 없는 대화/인용/수치/날짜를 추가하지 마.
+3. 문장 길이는 자유롭게 — 짧은 것(5자)도 긴 것(25자)도 섞어서 리듬감 있게.
+4. 전체 15~22문장. 250~400자.
+5. 첫 문장은 주제를 바로 꺼내. 훅 잡는 질문이나 핵심 팩트로 시작.
+   (패턴: 질문형/충격형/공감형/비밀폭로형/대조형 중 택1)
+6. 3줄 연속 같은 분위기 금지 — 감정을 계속 전환해서 이탈 방지.
+7. 마지막은 자연스럽게 끝내. 억지 구독유도 하지 마. 대신 질문 던져서 댓글 유도.
+8. 금지: "여러분", 실명, **볼드**, 이모지, "구독", "좋아요"
 
 말투 참고 (이걸 그대로 쓰지 말고 자연스럽게 변형해):
 - 놀랄 때: "이게 진짜?", "아 이건 좀...", "와 미쳤는데"
@@ -690,17 +829,19 @@ JSON만 출력:
     # ── 원글 없을 때: 주제 기반 정보형 대본 ──
     PROMPT_NO_SOURCE = """유튜브 쇼츠 나레이션 대본을 만들어.
 
-역할: 20대 한국 남자가 특정 주제에 대해 알려주는 느낌. 정보 전달형.
+역할: 20대 한국 남자가 특정 주제에 대해 얘기하는 느낌. 가벼운 정보 전달형.
 
 규칙:
-1. [주제]에 대해 사람들이 몰랐을 법한 구체적 정보를 전달해.
-2. 뻔한 상식 나열 금지. 의외의 팩트, 숫자 비교, 실제 경험담 위주.
-3. 확실하지 않은 건 "~라는 말이 있음", "~라고 하더라" 식으로 표현.
-4. 문장 길이 자유 — 짧은 것도 긴 것도 섞어서 리듬감 있게.
-5. 전체 15~22문장. 250~400자.
-6. 첫 문장은 주제의 핵심을 바로 꺼내. 질문형이나 의외의 사실로 시작.
-7. 마지막은 자연스럽게 끝내. "구독해" 같은 CTA 하지 마.
-8. 금지: "여러분", 실명, **볼드**, 이모지, "구독", "좋아요"
+1. [주제]에 대해 널리 알려진 사실이나 대중적으로 공감할 수 있는 내용 위주로 전달.
+2. 확인되지 않은 통계/수치/연구결과 절대 사용 금지.
+3. 직접 경험한 것처럼 쓰지 마. "~라는 사실 알아?" 같은 일반적 사실만 OK.
+4. 의학/법률/금융 정보는 절대 다루지 마. 잘못된 정보는 위험함.
+5. 문장 길이 자유 — 짧은 것도 긴 것도 섞어서 리듬감 있게.
+6. 전체 15~22문장. 250~400자.
+7. 첫 문장은 주제의 핵심을 바로 꺼내. 질문형이나 공감할 수 있는 사실로 시작.
+8. 마지막은 자연스럽게 끝내. "구독해" 같은 CTA 하지 마.
+9. 금지: "여러분", 실명, **볼드**, 이모지, "구독", "좋아요"
+10. "~라는 말이 있다", "전문가에 따르면" 같은 근거 없는 인용 금지.
 
 말투: 친구한테 얘기하듯이 편하게. 억지로 인터넷 용어 넣지 마.
 자연스러우면 "ㅋㅋ"나 "ㄷㄷ" 써도 되지만 매 문장마다 쓰지 마.
@@ -759,7 +900,10 @@ JSON만 출력:
         # 이스케이프되지 않은 줄바꿈 처리
         json_str = json_str.replace('\n', '\\n')
 
-        return json.loads(json_str)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON 파싱 실패: {e}") from e
 
     def _call_gemini(self, topic: str, source_text: str) -> Optional[dict]:
         """Gemini 2.0 Flash - 무료, 1순위"""
@@ -792,33 +936,7 @@ JSON만 출력:
             print(f"  [WARN] Gemini 실패: {e}")
             return None
 
-    def _call_openai(self, topic: str, source_text: str) -> Optional[dict]:
-        """GPT-4o-mini - 유료, 2순위 폴백"""
-        try:
-            import openai
-
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                return None
-
-            client = openai.OpenAI(api_key=api_key)
-
-            prompt = self._build_prompt(topic, source_text)
-
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                response_format={"type": "json_object"},
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-            )
-
-            result = json.loads(response.choices[0].message.content)
-            print("  [OK] OpenAI 대본 생성 성공")
-            return result
-
-        except Exception as e:
-            print(f"  [WARN] OpenAI 실패: {e}")
-            return None
+    # v5.0: OpenAI 폴백 제거 — Gemini 2.0 Flash만 사용 (무료)
 
     def _quality_check(self, script_data: dict) -> int:
         """품질 채점 (100점 만점, 감점 방식) — 콘텐츠 다양성 + 정보 밀도 포함"""
@@ -886,11 +1004,7 @@ JSON만 출력:
             reasons.append(f"제목 너무 김 ({len(title)}자)")
 
         # 이모지 체크
-        emoji_pattern = re.compile(
-            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
-            "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]"
-        )
-        if emoji_pattern.search(title) or emoji_pattern.search(text):
+        if Config.EMOJI_PATTERN.search(title) or Config.EMOJI_PATTERN.search(text):
             score -= 10
             reasons.append("이모지 포함")
 
@@ -911,6 +1025,42 @@ JSON만 출력:
                 score -= repeated * 5
                 reasons.append(f"반복 패턴 {repeated}개")
 
+        # ── 정확성 검증 (허위정보 탐지) ──
+        # 1) 미확인 연구/전문가 인용 감점
+        fake_authority = [
+            "연구에 따르면", "연구결과", "연구팀", "연구진",
+            "전문가에 따르면", "전문가들은", "관계자에 따르면",
+            "통계에 따르면", "조사에 따르면",
+        ]
+        fake_count = sum(1 for fa in fake_authority if fa in text)
+        if fake_count:
+            score -= fake_count * 15
+            reasons.append(f"미확인 인용 {fake_count}건")
+
+        # 2) 위험 정보 패턴 (의학/법률/금융)
+        danger_patterns = [
+            r'\d+%\s*(확률|가능성|치료율|효과|감소)',
+            r'(벌금|과태료|징역)\s*\d+',
+            r'(투자|수익률?|이자율?)\s*\d+',
+        ]
+        for dp in danger_patterns:
+            if re.search(dp, text):
+                score -= 20
+                reasons.append("위험정보 포함(의학/법률/금융)")
+                break
+
+        # 3) 가짜 경험담 패턴
+        fake_exp = [
+            "내 친구가", "내 동생이", "옆집 아저씨",
+            "아는 형이", "직접 해봤는데",
+        ]
+        if not hasattr(self, '_source_text') or not self._source_text:
+            # 소스 없는 대본에서 구체적 경험담 = 허위 가능성 높음
+            exp_count = sum(1 for fe in fake_exp if fe in text)
+            if exp_count:
+                score -= exp_count * 10
+                reasons.append(f"미확인 경험담 {exp_count}건")
+
         score = max(0, score)
 
         if reasons:
@@ -928,7 +1078,7 @@ JSON만 출력:
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"\*(.+?)\*", r"\1", text)
 
-        # AI 슬롭 → 커뮤니티 말투로 교체
+        # AI 슬롭 → 커뮤니티 말투로 교체 (대폭 확장)
         replacements = {
             "흥미롭": "재밌",
             "놀라운": "대박인",
@@ -940,6 +1090,22 @@ JSON만 출력:
             "주목할 만한": "개쩌는",
             "눈여겨볼": "봐야 할",
             "한편으로는": "근데",
+            "매력적인": "끌리는",
+            "인상적인": "쩌는",
+            "독보적인": "개유일한",
+            "혁신적인": "새로운",
+            "획기적인": "대박인",
+            "그뿐만 아니라": "게다가",
+            "이에 더해": "그리고",
+            "나아가": "더",
+            "더불어": "그리고",
+            "결론적으로": "결국",
+            "정리하자면": "걍",
+            "요약하자면": "걍",
+            "되새겨 보": "생각해 보",
+            "큰 교훈": "배운 거",
+            "하겠습니다": "할게",
+            "되겠습니다": "될 거야",
             "전문가들은": "사람들이",
             "귀추가 주목": "기대됨",
         }
@@ -947,13 +1113,7 @@ JSON만 출력:
             text = text.replace(old, new)
 
         # 이모지 제거
-        emoji_pattern = re.compile(
-            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
-            "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
-            "\U00002702-\U000027B0\U0000FE00-\U0000FE0F"
-            "\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F]"
-        )
-        text = emoji_pattern.sub("", text)
+        text = Config.EMOJI_PATTERN.sub("", text)
 
         # 빈 줄 정리만 (인위적 문장 분리 하지 않음)
         lines = [l.strip() for l in text.split("\n") if l.strip()]
@@ -962,7 +1122,7 @@ JSON만 출력:
 
         # 제목에서도 이모지 제거
         title = script_data.get("title", "")
-        title = emoji_pattern.sub("", title).strip()
+        title = Config.EMOJI_PATTERN.sub("", title).strip()
         script_data["title"] = title
 
         return script_data
@@ -970,8 +1130,11 @@ JSON만 출력:
     def generate(self, topic: str, source_text: str) -> dict:
         """대본 생성 메인 - 품질 85점 이상까지 최대 3회 재시도"""
         print("\n" + "=" * 60)
-        print("STEP 2: 대본 생성 (Gemini -> OpenAI 폴백)")
+        print("STEP 2: 대본 생성 (Gemini 2.0 Flash — 무료)")
         print("=" * 60)
+
+        # 정확성 검증용 소스 저장
+        self._source_text = source_text
 
         if not source_text:
             print("  [WARN] 원글 본문 없음 — 주제만으로 생성")
@@ -983,11 +1146,9 @@ JSON만 출력:
             print(f"\n  시도 {attempt + 1}/{Config.MAX_RETRY}")
 
             result = self._call_gemini(topic, source_text)
-            if result is None:
-                result = self._call_openai(topic, source_text)
 
             if result is None:
-                print("  [ERROR] LLM 전부 실패")
+                print("  [ERROR] Gemini 실패 — 재시도")
                 continue
 
             result = self._post_process(result)
@@ -1016,14 +1177,12 @@ JSON만 출력:
 
 
 # ============================================================================
-# STEP 3: TTS 생성 (edge-tts → ElevenLabs → OpenAI 3단계 폴백)
+# STEP 3: TTS 생성 (edge-tts 전용 — 무료, 단어별 타이밍)
 # ============================================================================
 class TTSEngine:
     """
-    3단계 TTS 폴백: edge-tts → ElevenLabs → OpenAI TTS
-    - edge-tts: 무료, WordBoundary 타이밍 지원
-    - ElevenLabs: 고품질 (ELEVENLABS_API_KEY 필요)
-    - OpenAI TTS: 안정적 (OPENAI_API_KEY 필요)
+    v5.0: edge-tts 전용 TTS (무료, WordBoundary 타이밍 지원)
+    유료 폴백(ElevenLabs/OpenAI) 제거 — API 비용 0원
     """
 
     async def _edge_tts(self, text: str, output_mp3: str) -> list[dict]:
@@ -1051,92 +1210,24 @@ class TTSEngine:
 
         return word_timings
 
-    def _elevenlabs_tts(self, text: str, output_mp3: str) -> list[dict]:
-        """ElevenLabs TTS — 고품질 한국어 음성"""
-        import requests
-
-        api_key = os.getenv("ELEVENLABS_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("ELEVENLABS_API_KEY 미설정")
-
-        voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
-        resp = requests.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
-            headers={"xi-api-key": api_key, "Content-Type": "application/json"},
-            json={
-                "text": text,
-                "model_id": "eleven_multilingual_v2",
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
-            },
-            timeout=60,
-        )
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"ElevenLabs HTTP {resp.status_code}")
-
-        with open(output_mp3, "wb") as f:
-            f.write(resp.content)
-
-        print(f"  [OK] ElevenLabs TTS: {len(resp.content) // 1024}KB")
-        return []
-
-    def _openai_tts(self, text: str, output_mp3: str) -> list[dict]:
-        """OpenAI TTS API"""
-        import requests
-
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY 미설정")
-
-        resp = requests.post(
-            "https://api.openai.com/v1/audio/speech",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": "tts-1", "input": text, "voice": "nova", "response_format": "mp3", "speed": 1.1},
-            timeout=60,
-        )
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"OpenAI TTS HTTP {resp.status_code}")
-
-        with open(output_mp3, "wb") as f:
-            f.write(resp.content)
-
-        print(f"  [OK] OpenAI TTS: {len(resp.content) // 1024}KB")
-        return []
+    # v5.0: ElevenLabs / OpenAI TTS 제거 — edge-tts만 사용 (무료)
 
     async def generate_with_timing(self, text: str, output_mp3: str) -> list[dict]:
-        """edge-tts → ElevenLabs → OpenAI 3단계 폴백"""
-        # 1단계: edge-tts
+        """edge-tts 전용 TTS (무료, 단어별 타이밍 지원)"""
         try:
             word_timings = await self._edge_tts(text, output_mp3)
             if os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 1000:
                 print(f"  [OK] edge-tts 성공: {len(word_timings)}개 타이밍")
                 return word_timings
+            raise RuntimeError("edge-tts 출력 파일 없음 또는 비정상")
         except Exception as e:
-            print(f"  [WARN] edge-tts 실패: {e}")
-
-        # 2단계: ElevenLabs
-        try:
-            word_timings = self._elevenlabs_tts(text, output_mp3)
-            if os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 1000:
-                return word_timings
-        except Exception as e:
-            print(f"  [WARN] ElevenLabs 실패: {e}")
-
-        # 3단계: OpenAI TTS
-        try:
-            word_timings = self._openai_tts(text, output_mp3)
-            if os.path.exists(output_mp3) and os.path.getsize(output_mp3) > 1000:
-                return word_timings
-        except Exception as e:
-            print(f"  [WARN] OpenAI TTS 실패: {e}")
-
-        raise RuntimeError("TTS 3단계 폴백 모두 실패")
+            print(f"  [ERROR] edge-tts 실패: {e}")
+            raise RuntimeError(f"TTS 실패 (edge-tts): {e}")
 
     def generate(self, text: str, output_mp3: str) -> list[dict]:
         """동기 래퍼"""
         print("\n" + "=" * 60)
-        print("STEP 3: TTS 생성 (edge→ElevenLabs→OpenAI 폴백)")
+        print("STEP 3: TTS 생성 (edge-tts — 무료)")
         print("=" * 60)
         return asyncio.run(self.generate_with_timing(text, output_mp3))
 
@@ -1196,7 +1287,8 @@ def master_audio(input_path: str, output_path: str) -> str:
             subprocess.run(fallback_cmd, capture_output=True, check=True, timeout=120)
             print("  [OK] 마스터링 완료 (1-pass 폴백)")
             return output_path
-        except Exception:
+        except Exception as e:
+            logger.warning(f"마스터링 폴백 실패: {e}")
             print(f"  [WARN] 마스터링 실패 - 원본 사용: {e}")
             return input_path
 
@@ -1268,11 +1360,9 @@ class SubtitleGenerator:
         cs = (ms % 1000) // 10
         return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    def generate_ass(self, word_timings: list[dict], output_ass: str) -> str:
-        """ASS 자막 파일 생성 - 단어별 하이라이트"""
-        lines = self._group_words_into_lines(word_timings)
-
-        ass_content = f"""[Script Info]
+    def _get_ass_header(self) -> str:
+        """ASS header"""
+        return f"""[Script Info]
 Title: youshorts subtitles
 ScriptType: v4.00+
 PlayResX: {Config.WIDTH}
@@ -1286,6 +1376,13 @@ Style: Default,{Config.SUBTITLE_FONT},{Config.SUBTITLE_SIZE},{Config.SUBTITLE_CO
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+
+
+    def generate_ass(self, word_timings: list[dict], output_ass: str) -> str:
+        """ASS 자막 파일 생성 - 단어별 하이라이트"""
+        lines = self._group_words_into_lines(word_timings)
+
+        ass_content = self._get_ass_header()
 
         for line in lines:
             words_in_line = line["words"]
@@ -1337,20 +1434,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         chunk_duration = total_duration / len(chunks) if chunks else 3.0
 
-        ass_content = f"""[Script Info]
-Title: youshorts subtitles
-ScriptType: v4.00+
-PlayResX: {Config.WIDTH}
-PlayResY: {Config.HEIGHT}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{Config.SUBTITLE_FONT},{Config.SUBTITLE_SIZE},{Config.SUBTITLE_COLOR_NORMAL},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{Config.SUBTITLE_OUTLINE},{Config.SUBTITLE_SHADOW},2,40,40,{Config.SUBTITLE_MARGIN_V},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+        ass_content = self._get_ass_header()
 
         for i, chunk in enumerate(chunks):
             start_ms = int(i * chunk_duration * 1000)
@@ -1508,8 +1592,8 @@ class VideoRenderer:
             val = result.stdout.strip()
             if val:
                 return float(val)
-        except Exception:
-            pass
+        except (ValueError, subprocess.SubprocessError, OSError) as e:
+            logger.warning(f"ffprobe 듀레이션 확인 실패: {e}")
         # 2차: ffmpeg -i stderr에서 Duration 파싱
         try:
             result = subprocess.run(
@@ -1521,8 +1605,8 @@ class VideoRenderer:
             if m:
                 h, mi, s, cs = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
                 return h * 3600 + mi * 60 + s + cs / 100
-        except Exception:
-            pass
+        except (ValueError, subprocess.SubprocessError, OSError) as e:
+            logger.warning(f"ffmpeg 듀레이션 파싱 실패: {e}")
         return 60  # 안전한 기본값
 
     def render(self, tts_mp3: str, ass_subtitle: str, output_mp4: str,
@@ -1658,7 +1742,8 @@ class HistoryManager:
     def _load(self) -> list[dict]:
         try:
             return json.loads(self.history_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"히스토리 로드 실패: {e}")
             return []
 
     def is_duplicate(self, topic: str) -> bool:
@@ -1780,7 +1865,8 @@ class YouTubeUploader:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"YouTube 토큰 갱신 실패: {e}")
                     creds = None
 
             if not creds or not creds.valid:
@@ -1989,8 +2075,8 @@ def cleanup_temp_files(work_dir: Path):
             try:
                 f.unlink()
                 removed += 1
-            except Exception:
-                pass
+            except OSError as e:
+                logger.warning(f"파일 삭제 실패: {e}")
     if removed:
         print(f"  [OK] 임시 파일 {removed}개 정리")
 
@@ -2109,13 +2195,17 @@ def make_one_perfect_short(
              "-of", "csv=p=0", tts_mp3],
             capture_output=True, text=True, timeout=10,
         )
-        tts_duration = float(probe.stdout.strip())
+        try:
+            tts_duration = float(probe.stdout.strip())
+        except (ValueError, TypeError):
+            tts_duration = 40.0
         if tts_duration > Config.MAX_DURATION:
             speed = tts_duration / Config.MAX_DURATION
             adjusted_mp3 = str(work_dir / "tts_adjusted.mp3")
             tts_mp3 = adjust_audio_speed(tts_mp3, speed, adjusted_mp3)
-    except Exception:
-        pass
+    except (ValueError, subprocess.SubprocessError, OSError) as e:
+        logger.warning(f"TTS 듀레이션 확인 실패: {e}")
+        tts_duration = 40.0
 
     # ── STEP 4: 자막 생성 ──
     print("\n" + "=" * 60)
@@ -2132,8 +2222,8 @@ def make_one_perfect_short(
         try:
             _r = VideoRenderer()
             _dur = _r._get_video_duration(tts_mp3)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"듀레이션 확인 실패: {e}")
         subtitle_gen.generate_ass_from_chunks(
             script_data["tts_script"], _dur, ass_file
         )
@@ -2180,7 +2270,7 @@ def make_one_perfect_short(
     print("\n" + "=" * 60)
     print(f"  영상 생성 완료!")
     print(f"  파일: {final_video}")
-    print(f"  제목: {script_data['title']}")
+    print(f"  제목: {script_data.get('title', 'Unknown')}")
     print(f"  품질: {script_data.get('quality_score', 'N/A')}점")
     print(f"  소요시간: {elapsed:.1f}초")
     print(f"  태그: {', '.join(script_data.get('tags', []))}")
