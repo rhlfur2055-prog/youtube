@@ -768,19 +768,34 @@ class KlingVideoGenerator:
         self._token_exp = now + 1800
         return self._token
 
+    def _upload_temp_image(self, image_path: str) -> str:
+        """이미지를 임시 호스팅에 업로드 → URL 반환"""
+        try:
+            with open(image_path, "rb") as f:
+                resp = requests.post(
+                    "https://0x0.st",
+                    files={"file": (os.path.basename(image_path), f)},
+                    timeout=30,
+                )
+            if resp.status_code == 200:
+                url = resp.text.strip()
+                print(f"    📤 이미지 업로드: {url}")
+                return url
+        except Exception as e:
+            print(f"    ⚠️  이미지 업로드 실패: {e}")
+        return ""
+
     def generate_video(self, image_path: str, prompt: str,
-                       output_path: str, duration: str = "5") -> bool:
+                       output_path: str, duration: int = 5) -> bool:
         """이미지 → 동영상 변환 (동기 폴링, 최대 5분 대기)"""
         if not self.available:
             return False
         try:
-            # 이미지를 base64로 인코딩
-            import base64
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
-            ext = os.path.splitext(image_path)[1].lower()
-            mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
-            data_uri = f"data:{mime};base64,{img_b64}"
+            # 이미지를 임시 호스팅에 업로드하여 URL 획득
+            image_url = self._upload_temp_image(image_path)
+            if not image_url:
+                print(f"    ⚠️  Kling: 이미지 URL 생성 실패")
+                return False
 
             token = self._get_token()
             headers = {
@@ -790,17 +805,19 @@ class KlingVideoGenerator:
             # 태스크 생성
             body = {
                 "model_name": "kling-v1",
-                "image": data_uri,
+                "image": image_url,
                 "prompt": prompt[:200],
                 "mode": "std",
-                "duration": duration,
+                "duration": str(duration),
                 "cfg_scale": 0.5,
             }
             resp = requests.post(
                 f"{self.BASE_URL}/v1/videos/image2video",
                 json=body, headers=headers, timeout=30,
             )
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                print(f"    ⚠️  Kling API {resp.status_code}: {resp.text[:200]}")
+                return False
             result = resp.json()
             task_id = result.get("data", {}).get("task_id")
             if not task_id:
@@ -939,7 +956,7 @@ class ImageGenerator:
     def generate_scene_images(self, script_data: dict, work_dir: str) -> list[dict]:
         """
         v6.0: 대본의 각 장면에 대해 웹툰 이미지 생성.
-        우선순위: GoAPI Midjourney → Bing DALL-E 3 → Replicate FLUX → Pexels
+        우선순위: GoAPI Midjourney → Replicate FLUX → Bing DALL-E 3 → 재사용
         Returns: [{"chunk_idx": 0, "end_idx": 2, "image_path": "...", "prompt": "..."}]
         """
         # ★ 캐릭터 일관성: 새 영상 시작 시 캐릭터 기억 리셋
@@ -960,11 +977,9 @@ class ImageGenerator:
         engines = []
         if self._goapi and not self._goapi_failed:
             engines.append("Midjourney (GoAPI)")
-        engines.append("Bing DALL-E 3")
         if self.replicate_token:
-            engines.append("Replicate")
-        if self.pexels_key:
-            engines.append("Pexels")
+            engines.append("Replicate FLUX")
+        engines.append("Bing DALL-E 3")
         print(f"\n  🖼️  장면 이미지 생성 중... ({len(scene_groups)}장, mood={mood})")
         print(f"    엔진 우선순위: {' → '.join(engines)}")
 
@@ -1005,7 +1020,27 @@ class ImageGenerator:
                     if goapi_consecutive_fail >= 3:
                         self._goapi_failed = True
 
-            # ── 1순위: Bing Image Creator (DALL-E 3 웹툰) ──
+            # ── 1순위: Replicate FLUX-schnell ──
+            if not success and self.replicate_token:
+                webtoon_prompt = self._build_webtoon_prompt(raw_prompt, group["texts"], mood)
+                webp_path = image_path.replace(".jpg", ".webp")
+                success = self._generate_replicate(webtoon_prompt, webp_path)
+                if success:
+                    image_path = webp_path
+                    print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🤖 FLUX: {raw_prompt[:45]}...")
+                else:
+                    # ★ NSFW 차단 시 safe-for-work 프롬프트로 1회 재시도
+                    safe_prompt = (
+                        "safe for work, cartoon illustration, "
+                        + webtoon_prompt.replace("sexy", "").replace("nude", "")
+                        .replace("violence", "action").replace("blood", "red")
+                    )
+                    success = self._generate_replicate(safe_prompt, webp_path)
+                    if success:
+                        image_path = webp_path
+                        print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🤖 FLUX (SFW 재시도): {raw_prompt[:35]}...")
+
+            # ── 2순위: Bing Image Creator (DALL-E 3 웹툰) ──
             if not success and not self._bing_failed and bing_consecutive_fail < 3:
                 webtoon_prompt = self._build_webtoon_prompt(raw_prompt, group["texts"], mood)
                 bing = self._get_bing_creator()
@@ -1019,26 +1054,6 @@ class ImageGenerator:
                         if bing_consecutive_fail >= 3:
                             print(f"    ⚠️  Bing 3회 연속 실패 → 폴백 전환")
                             self._bing_failed = True
-
-            # ── 2순위: Replicate FLUX-schnell ──
-            if not success and self.replicate_token:
-                webtoon_prompt = self._build_webtoon_prompt(raw_prompt, group["texts"], mood)
-                webp_path = image_path.replace(".jpg", ".webp")
-                success = self._generate_replicate(webtoon_prompt, webp_path)
-                if success:
-                    image_path = webp_path
-                    print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🤖 Replicate: {raw_prompt[:45]}...")
-                else:
-                    # ★ NSFW 차단 시 safe-for-work 프롬프트로 1회 재시도
-                    safe_prompt = (
-                        "safe for work, cartoon illustration, "
-                        + webtoon_prompt.replace("sexy", "").replace("nude", "")
-                        .replace("violence", "action").replace("blood", "red")
-                    )
-                    success = self._generate_replicate(safe_prompt, webp_path)
-                    if success:
-                        image_path = webp_path
-                        print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🤖 Replicate (SFW 재시도): {raw_prompt[:35]}...")
 
             # ── 3순위: 직전 성공 이미지 재사용 (Pexels 스톡사진 → 화풍 깨짐 방지) ──
             if not success and last_success_path and os.path.exists(last_success_path):
