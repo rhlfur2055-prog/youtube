@@ -125,6 +125,7 @@ def check_dependencies():
         "PIL": "Pillow",
         "imageio_ffmpeg": "imageio-ffmpeg",
         "google.generativeai": "google-generativeai",
+        "anthropic": "anthropic",  # 대본 생성 (Claude)
     }
     for module, package in required.items():
         try:
@@ -173,6 +174,10 @@ check_dependencies()
 import edge_tts
 import requests
 import google.generativeai as genai_flash
+try:
+    import anthropic as _anthropic_module
+except ImportError:
+    _anthropic_module = None
 from apify_client import ApifyClient
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
@@ -184,6 +189,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 class Config:
     # API 키
     google_api_key: str = ""
+    anthropic_api_key: str = ""  # 대본 생성용 Claude (claude-sonnet-4-6)
     apify_api_token: str = ""
 
     # 크롤링
@@ -232,6 +238,7 @@ class Config:
 
     def __post_init__(self):
         self.google_api_key = os.getenv("GOOGLE_API_KEY", self.google_api_key)
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", self.anthropic_api_key)
         self.apify_api_token = os.getenv("APIFY_API_TOKEN", self.apify_api_token)
         # v6.0: 멀티엔진 TTS + GoAPI
         self.elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", self.elevenlabs_api_key)
@@ -3501,10 +3508,10 @@ class CommunityScraper:
 
 
 # ============================================================
-# 📝 Stage 2: 대본 생성 (Gemini 2.0 Flash — 무료)
+# 📝 Stage 2: 대본 생성 (Gemini 2.0 Flash)
 # ============================================================
 class ScriptGenerator:
-    """v7.0: Gemini 2.0 Flash 기반 — 100만뷰 숏츠 대본 생성기 (무료)
+    """v7.0: Gemini (gemini-2.0-flash) 기반 — 100만뷰 숏츠 대본 생성기
 
     3분할 프롬프트 아키텍처:
       ROLE_PROMPT  → 핵심 역할 (1인칭 썰 작가)
@@ -3512,6 +3519,7 @@ class ScriptGenerator:
       CONTENT_RULES → 금지사항 + 2030 키워드 + 감정 곡선
     """
 
+    # v6.1 → v6.2: Claude → Gemini 롤백 (크레딧 부족 이슈)
     GEMINI_MODEL = "gemini-2.0-flash"
 
     # ── [0/3] DIRECTOR_PERSONA: 모든 테마 공통 상위 페르소나 ──
@@ -3531,6 +3539,9 @@ Step 3. AI 시각화: 모든 image_prompt는 영어로, 아래 키워드를 조�
 [Pace 규칙] 1초당 3.5음절. 한 문장 20자 이내. 불필요한 미사여구 삭제.
 
 주의: Step 1의 트렌드 분석 결과는 JSON에 포함하지 마. 대본 JSON만 출력."""
+
+    # v6.2: Gemini 롤백 — DIRECTOR_PERSONA를 시스템 프롬프트로 사용
+    SYSTEM_PROMPT = DIRECTOR_PERSONA
 
     # ── [1/3] ROLE_PROMPT: 핵심 역할 + 말투 ──
     ROLE_PROMPT = """너는 자극적인 커뮤니티 이슈를 전달하는 스토리텔러야.
@@ -3895,11 +3906,19 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
     def __init__(self, config: Config):
         self.config = config
         self.theme = getattr(config, "theme", "auto")
+        # v6.2: Gemini 롤백 — google_api_key 사용
         api_key = config.google_api_key
         if not api_key:
-            raise ValueError("GOOGLE_API_KEY 환경변수가 필요합니다!")
+            raise ValueError("GOOGLE_API_KEY 환경변수가 필요합니다! (대본 생성: Gemini)")
         genai_flash.configure(api_key=api_key)
-        self.model = genai_flash.GenerativeModel(self.GEMINI_MODEL)
+        self._model = genai_flash.GenerativeModel(
+            self.GEMINI_MODEL,
+            generation_config=genai_flash.types.GenerationConfig(
+                temperature=0.4,
+                top_p=0.95,
+                max_output_tokens=4096,
+            ),
+        )
 
         # ★ 테마 프리셋 레지스트리 (gossip은 기존 클래스 상수 참조)
         self.THEME_PRESETS = {
@@ -3915,9 +3934,9 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
                 "build_prompt_suffix": "위 소스를 바탕으로 분노와 반전을 강조한 1인칭 썰 형식의 숏츠 대본을 JSON으로 출력해.",
                 "image_style": "Cinematic, 8k, High Contrast, Korean webtoon style, bold outlines",
                 "quality_params": {
-                    "min_emotion_types": 5, "max_highlight_ratio": 0.30,
-                    "max_long_sentence_count": 2, "long_sentence_threshold": 22,
-                    "min_sentence_count": 10, "max_first_sentence_len": 15,
+                    "min_emotion_types": 4, "max_highlight_ratio": 0.30,
+                    "max_long_sentence_count": 2, "long_sentence_threshold": 12,
+                    "min_sentence_count": 6, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 2,
                 },
             },
@@ -3933,8 +3952,8 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
                 "image_style": "Cinematic close-up, 8k resolution, clean bright lighting, minimalist, trendy aesthetic",
                 "quality_params": {
                     "min_emotion_types": 3, "max_highlight_ratio": 0.35,
-                    "max_long_sentence_count": 3, "long_sentence_threshold": 22,
-                    "min_sentence_count": 8, "max_first_sentence_len": 18,
+                    "max_long_sentence_count": 2, "long_sentence_threshold": 12,
+                    "min_sentence_count": 6, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 2,
                 },
             },
@@ -3950,8 +3969,8 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
                 "image_style": "Anime style, vibrant colors, high contrast, expressive, trendy aesthetic",
                 "quality_params": {
                     "min_emotion_types": 3, "max_highlight_ratio": 0.30,
-                    "max_long_sentence_count": 2, "long_sentence_threshold": 22,
-                    "min_sentence_count": 8, "max_first_sentence_len": 18,
+                    "max_long_sentence_count": 2, "long_sentence_threshold": 12,
+                    "min_sentence_count": 6, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 3, "min_funny_ratio": 0.35,
                 },
             },
@@ -3966,9 +3985,9 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
                 "build_prompt_suffix": "위 소스를 바탕으로 궁금증 유발 → 끝까지 보게 만드는 미스터리 숏츠 대본을 JSON으로 출력해.",
                 "image_style": "Mysterious atmosphere, dark moody lighting, hyper-realistic, 4k, cinematic fog, high contrast",
                 "quality_params": {
-                    "min_emotion_types": 4, "max_highlight_ratio": 0.25,
-                    "max_long_sentence_count": 2, "long_sentence_threshold": 22,
-                    "min_sentence_count": 8, "max_first_sentence_len": 18,
+                    "min_emotion_types": 3, "max_highlight_ratio": 0.25,
+                    "max_long_sentence_count": 2, "long_sentence_threshold": 12,
+                    "min_sentence_count": 6, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 2,
                 },
             },
@@ -4024,9 +4043,8 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
         if image_style:
             image_style_section = f"\n[image_prompt 스타일 강제]\n모든 image_prompt 끝에 반드시 포함: {image_style}\n"
 
-        return f"""{self.DIRECTOR_PERSONA}
-
-{preset['ROLE_PROMPT']}
+        # 사용자 메시지 (시스템 프롬프트는 SHORTS_SYSTEM_PROMPT로 별도 전달)
+        return f"""{preset['ROLE_PROMPT']}
 
 {preset['FEW_SHOT_EXAMPLES']}
 
@@ -4179,20 +4197,11 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
         for attempt in range(1, max_attempts + 1):
             try:
                 prompt = self._build_prompt(post, retry_feedback)
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=genai_flash.GenerationConfig(
-                        temperature=0.4,
-                        max_output_tokens=2500,
-                        top_k=40,
-                        top_p=0.9,
-                        response_mime_type="application/json",
-                    ),
-                )
-
+                # v6.2: Gemini 롤백 — DIRECTOR_PERSONA + 프롬프트를 합쳐 전달
+                full_prompt = self.SYSTEM_PROMPT + "\n\n" + prompt
+                response = self._model.generate_content(full_prompt)
                 if not response.text:
                     raise ValueError("Gemini API returned empty response")
-
                 raw = response.text
                 script_data = self._extract_json(raw)
 
@@ -4215,7 +4224,7 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
                         "accuracy_warnings": script_data.get("_accuracy_warnings", 0),
                         "attempts": attempt,
                     }
-                    print(f"  ✅ 대본 완료! ({elapsed:.1f}초, {n}문장, {attempt}회차, Gemini Flash)")
+                    print(f"  ✅ 대본 완료! ({elapsed:.1f}초, {n}문장, {attempt}회차, Gemini)")
                     return script_data
 
                 # 검증 실패 → 재생성 준비
@@ -4439,7 +4448,14 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
         return script_data
 
     def _extract_json(self, text: str) -> dict:
-        # 0차: 전체 텍스트를 바로 JSON 파싱 시도 (response_mime_type="application/json" 대응)
+        # 0차 전처리: 마크다운 백틱 제거 (```json ... ``` 또는 ``` ... ```)
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```\s*$", "", text)
+            text = text.strip()
+
+        # 1차: 전체 텍스트를 바로 JSON 파싱 시도
         try:
             parsed = json.loads(text)
             # ★ Gemini가 배열 [{}]로 감쌀 수 있음 → 첫 번째 dict 추출
@@ -6766,8 +6782,9 @@ async def main():
         output_dir=args.output,
     )
 
+    # v6.2: Gemini 롤백 — GOOGLE_API_KEY 필수
     if not config.google_api_key:
-        print("❌ GOOGLE_API_KEY 환경변수 필요!")
+        print("❌ GOOGLE_API_KEY 환경변수 필요! (대본 + 이미지 생성)")
         print("   export GOOGLE_API_KEY='AIza...'")
         print("   (무료: https://aistudio.google.com/apikey)")
         sys.exit(1)

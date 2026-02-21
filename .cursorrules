@@ -1,0 +1,65 @@
+# YouShorts v6.0 — Cursor Rules
+# 이 파일은 AI 코드 어시스턴트가 프로젝트 컨텍스트를 이해하도록 돕습니다.
+
+## 프로젝트 개요
+YouTube Shorts 자동 생산 파이프라인.
+트렌드 크롤링 → 대본 생성 → TTS → 이미지 생성 → FFmpeg 영상 조립 → 업로드.
+
+## 핵심 파일 구조
+- main.py (6,874줄): 핵심 파이프라인. ScriptGenerator, ImageGenerator, VideoFactory 등
+- mass_produce.py: main.py를 subprocess로 반복 호출하는 대량생산 루프
+- crawl_trends.py: 7개 소스 트렌드 크롤링 → topics.txt 저장
+- perfect_one_shot.py: 원샷 영상 생성 스크립트
+- elevenlabs_tts.py: ElevenLabs TTS (1순위, word-level timestamps)
+- openai_tts.py: OpenAI TTS (2순위, sentence-level)
+- goapi_midjourney.py: GoAPI Midjourney 이미지 생성 브릿지
+- bing_generator.py: Selenium 기반 Bing DALL-E 3
+- .env: API 키 관리 (하드코딩 절대 금지)
+
+## AI 모델 사용 현황 (변경 금지)
+- 대본 생성: Claude API (claude-sonnet-4-6) via anthropic SDK
+- 이미지 생성: Gemini (google-generativeai) ← 변경 금지
+- 크롤링 평가: Gemini ← 변경 금지
+- TTS: ElevenLabs > OpenAI > edge-tts 순서 폴백
+
+## 코드 수정 규칙
+1. main.py 수정 시 반드시 해당 섹션을 먼저 읽고 나서 수정할 것
+2. 기존 코드 변경 시 주석으로 변경 이유를 남길 것
+3. API 키는 반드시 .env에서 os.getenv()로 읽을 것 (하드코딩 절대 금지)
+4. 오류 발생 가능한 외부 호출은 try/except + print 로그 필수
+5. 주석은 한글로 작성
+6. 불필요한 import 추가 금지, 기존 import 패턴 따를 것
+
+## 환경변수 (.env)
+- ANTHROPIC_API_KEY (필수): Claude API 대본 생성
+- GOOGLE_API_KEY (선택): Gemini 이미지 생성, 크롤링 평가
+- ELEVENLABS_API_KEY (선택): ElevenLabs TTS
+- ELEVENLABS_VOICE_ID (선택): ElevenLabs 음성 ID
+- OPENAI_API_KEY (선택): OpenAI TTS
+- GOAPI_KEY (선택): GoAPI Midjourney 이미지
+- APIFY_API_TOKEN (선택): Apify 크롤링
+
+## 자주 쓰는 실행 명령
+- 영상 1개 생성: py mass_produce.py --count 1 --topics-file topics.txt
+- 트렌드 수집: py crawl_trends.py --count 5
+- 패키지 설치: pip install [패키지] --break-system-packages
+
+## 코드 스타일
+- Python 3.10+
+- async/await 패턴 (TTS, 이미지 생성)
+- dataclass 기반 Config
+- 클래스 기반 모듈 구조 (ScriptGenerator, ImageGenerator, VideoFactory 등)
+- 에러 메시지에 이모지 사용 (❌ ⚠️ ✅ 🎬 등)
+- f-string 포매팅
+
+## 자동화 실행 환경 제약
+- Chrome/Edge WebDriver는 반드시 모니터 1(주 모니터)에서만 실행
+- 브라우저 창이 모니터 2로 넘어가지 않도록 실행 시 window position 강제 설정
+- Bing 이미지 생성기 등 크롬 자동실행 시 창 위치를 (0,0)으로 고정
+- 불필요한 크롬 자동실행 최소화, 가능하면 headless 모드 우선 사용
+
+## 주의사항
+- main.py는 6,874줄 이상으로 매우 큼. 전체 읽기 불가하므로 섹션별로 읽을 것
+- mass_produce.py는 subprocess 기반이라 main.py와 직접 import 관계 없음
+- FFmpeg, ffprobe가 시스템 PATH에 있어야 영상 조립 가능
+- 이미지 생성은 외부 API 폴링 방식 (GoAPI 120초, Replicate 60초 소요)
