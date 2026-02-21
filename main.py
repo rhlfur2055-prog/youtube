@@ -212,10 +212,6 @@ class Config:
     tts_pitch: str = "-1Hz"
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = ""  # 기본 voice_id (감정별 자동 전환)
-    openai_api_key: str = ""
-    openai_tts_voice: str = "nova"  # alloy | nova | shimmer
-    openai_tts_model: str = "tts-1-hd"
-    goapi_key: str = ""  # GoAPI Midjourney 브릿지
 
     # 영상
     width: int = 1080
@@ -243,9 +239,6 @@ class Config:
         # v6.0: 멀티엔진 TTS + GoAPI
         self.elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", self.elevenlabs_api_key)
         self.elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID", self.elevenlabs_voice_id)
-        self.openai_api_key = os.getenv("OPENAI_API_KEY", self.openai_api_key)
-        self.openai_tts_voice = os.getenv("OPENAI_TTS_VOICE", self.openai_tts_voice)
-        self.goapi_key = os.getenv("GOAPI_KEY", self.goapi_key)
         os.makedirs(self.output_dir, exist_ok=True)
 
 
@@ -817,14 +810,6 @@ class ImageGenerator:
         # v6.0: GoAPI Midjourney (0순위)
         self._goapi = None
         self._goapi_failed = False
-        goapi_key = os.getenv("GOAPI_KEY", "")
-        if goapi_key:
-            try:
-                from goapi_midjourney import GoAPIMidjourney
-                self._goapi = GoAPIMidjourney(goapi_key)
-                print(f"  🎨 GoAPI Midjourney 연동 완료")
-            except ImportError:
-                print(f"  ⚠️  goapi_midjourney 모듈 없음 → GoAPI 스킵")
 
     def _get_bing_creator(self):
         """Bing Image Creator 인스턴스 (lazy init, 브라우저 1개 재사용)"""
@@ -4676,16 +4661,14 @@ class TTSEngine:
     def __init__(self, config: Config):
         self.config = config
         self._elevenlabs = None
-        self._openai_tts = None
         self._engine_order = []
         self._init_engines()
 
     def _init_engines(self):
-        """엔진 우선순위 해결: ElevenLabs → OpenAI → edge-tts"""
+        """엔진 우선순위 해결: ElevenLabs → edge-tts"""
         engine_pref = self.config.tts_engine
 
         if engine_pref == "auto":
-            # API 키 존재 여부로 자동 해결
             if self.config.elevenlabs_api_key:
                 try:
                     from elevenlabs_tts import ElevenLabsTTS
@@ -4696,17 +4679,6 @@ class TTSEngine:
                     self._engine_order.append("elevenlabs")
                 except ImportError:
                     print("  ⚠️  elevenlabs_tts 모듈 없음 → 스킵")
-            if self.config.openai_api_key:
-                try:
-                    from openai_tts import OpenAITTS
-                    self._openai_tts = OpenAITTS(
-                        self.config.openai_api_key,
-                        self.config.openai_tts_voice,
-                        self.config.openai_tts_model,
-                    )
-                    self._engine_order.append("openai")
-                except ImportError:
-                    print("  ⚠️  openai_tts 모듈 없음 → 스킵")
             self._engine_order.append("edge")
 
         elif engine_pref == "elevenlabs":
@@ -4716,15 +4688,6 @@ class TTSEngine:
                 self.config.elevenlabs_voice_id,
             )
             self._engine_order = ["elevenlabs", "edge"]
-
-        elif engine_pref == "openai":
-            from openai_tts import OpenAITTS
-            self._openai_tts = OpenAITTS(
-                self.config.openai_api_key,
-                self.config.openai_tts_voice,
-                self.config.openai_tts_model,
-            )
-            self._engine_order = ["openai", "edge"]
 
         else:  # "edge"
             self._engine_order = ["edge"]
@@ -4843,13 +4806,6 @@ class TTSEngine:
                         text, emotion, audio_path
                     )
                     result["engine"] = "elevenlabs"
-                    return result
-
-                elif engine_name == "openai" and self._openai_tts:
-                    result = await self._openai_tts.generate_sentence(
-                        text, emotion, audio_path
-                    )
-                    result["engine"] = "openai"
                     return result
 
                 elif engine_name == "edge":

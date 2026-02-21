@@ -16,7 +16,6 @@ google-api-python-client>=2.100.0
 
 # TTS 고품질 (선택 - 키 있으면 자동 사용)
 elevenlabs>=1.0.0
-openai>=1.0.0
 aiohttp>=3.9.0
 
 # APIFY 크롤링 (선택)
