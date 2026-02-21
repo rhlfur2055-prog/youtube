@@ -2,9 +2,9 @@
 """
 crawl_trends.py — 트렌드 크롤링 → topics.txt 자동 채우기
 
-7개 소스(Google Trends RSS, 네이버, YouTube, 네이트판, 디시, 에펨, 인스티즈)에서
-실시간 트렌드를 수집하고, 블랙리스트/부스트/중복제거를 거쳐
-topics.txt에 숏츠 주제를 어펜드한다.
+9개 소스(Google Trends, 네이버 뉴스, YouTube 트렌딩, YouTube Data API,
+Twitter/X, 네이트판, 디시, 루리웹, 인스티즈)에서 실시간 트렌드를 수집하고,
+블랙리스트/부스트/중복제거를 거쳐 topics.txt에 숏츠 주제를 어펜드한다.
 
 Usage:
     python crawl_trends.py                    # 기본: 10개 수집
@@ -469,6 +469,127 @@ class TrendSource:
 
         if not results:
             print(f"  [WARN] YouTube 수집 실패")
+        return results
+
+    @staticmethod
+    def fetch_youtube_shorts_api() -> list[dict]:
+        """YouTube Data API v3 — 한국 인기 숏츠 상위 50개 (YOUTUBE_API_KEY)"""
+        results = []
+        api_key = os.getenv("YOUTUBE_API_KEY", "")
+        if not api_key:
+            print("  [WARN] YOUTUBE_API_KEY 없음 -- YouTube Shorts API 스킵")
+            return results
+
+        try:
+            # Step 1: 인기 동영상 50개 가져오기
+            resp = requests.get(
+                "https://www.googleapis.com/youtube/v3/videos",
+                params={
+                    "part": "snippet,contentDetails,statistics",
+                    "chart": "mostPopular",
+                    "regionCode": "KR",
+                    "maxResults": 50,
+                    "key": api_key,
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                print(f"  [WARN] YouTube API HTTP {resp.status_code}: {resp.text[:100]}")
+                return results
+
+            data = resp.json()
+            items = data.get("items", [])
+
+            for idx, item in enumerate(items):
+                snippet = item.get("snippet", {})
+                title = snippet.get("title", "")
+                stats = item.get("statistics", {})
+                content = item.get("contentDetails", {})
+
+                if not title or len(title) < 3:
+                    continue
+
+                # 숏츠 판별: 60초 이하 or 제목에 #shorts
+                duration_str = content.get("duration", "")  # ISO 8601: PT1M30S
+                is_short = False
+                if "#shorts" in title.lower() or "#쇼츠" in title:
+                    is_short = True
+                elif duration_str:
+                    # PT로 시작, M이 없거나 1M 미만이면 숏츠
+                    dm = re.search(r'PT(?:(\d+)M)?(\d+)S', duration_str)
+                    if dm:
+                        minutes = int(dm.group(1) or 0)
+                        seconds = int(dm.group(2) or 0)
+                        if minutes == 0 and seconds <= 60:
+                            is_short = True
+
+                view_count = int(stats.get("viewCount", 0))
+                score = view_count // 100
+
+                # 숏츠에 보너스
+                if is_short:
+                    score = int(score * 1.5) + 30000
+                    source = "youtube_shorts_api"
+                else:
+                    source = "youtube_popular_api"
+
+                results.append({
+                    "keyword": title,
+                    "source": source,
+                    "score": max(score, (50 - idx) * 2000),
+                })
+
+            shorts_count = sum(1 for r in results if r["source"] == "youtube_shorts_api")
+            print(f"  [OK] YouTube API: {len(results)}개 (숏츠 {shorts_count}개)")
+        except Exception as e:
+            print(f"  [WARN] YouTube API 실패: {e}")
+        return results
+
+    @staticmethod
+    def fetch_twitter_trends() -> list[dict]:
+        """Twitter/X 한국 실시간 트렌드 (trends24.in 크롤링)"""
+        results = []
+        try:
+            resp = requests.get(
+                "https://trends24.in/korea/",
+                timeout=10,
+                headers={
+                    "User-Agent": _DESKTOP_UA,
+                    "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+                },
+            )
+            if resp.status_code != 200:
+                print(f"  [WARN] trends24 HTTP {resp.status_code}")
+                return results
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # trends24: .trend-card__list 내 li > a.trend-name
+            trend_lists = soup.select("ol.trend-card__list")
+
+            seen = set()
+            for ol in trend_lists[:2]:  # 최근 2개 시간대만
+                items = ol.select("li a")
+                for idx, a_tag in enumerate(items):
+                    text = a_tag.get_text(strip=True)
+                    if not text or len(text) < 2:
+                        continue
+                    # #해시태그 정리
+                    text = text.lstrip("#")
+                    if text in seen:
+                        continue
+                    seen.add(text)
+
+                    score = max(40000 - idx * 2000, 5000)
+                    results.append({
+                        "keyword": text,
+                        "source": "twitter_kr",
+                        "score": score,
+                    })
+
+            print(f"  [OK] Twitter/X 트렌드: {len(results)}개")
+        except Exception as e:
+            print(f"  [WARN] Twitter 트렌드 실패: {e}")
         return results
 
     @staticmethod
@@ -1120,15 +1241,16 @@ scores 배열의 길이는 반드시 {len(candidates)}개여야 한다."""
         kw_text = "\n".join(f"{i+1}. {kw}" for i, kw in enumerate(keywords))
 
         prompt = f"""너는 유튜브 숏츠 기획 전문가다.
-아래 트렌드 키워드/제목을 "유튜브 숏츠 영상 제목"으로 변환해.
+아래 뉴스/영상/트렌드 제목을 보고 숏츠로 만들기 좋은 주제로 변환해.
 
 변환 규칙:
 1. 한국어 구어체 (반말 OK, 격식체 금지)
 2. 15~30자 사이
-3. 호기심/궁금증 유발 (질문형, 반전 암시, 충격 암시)
-4. 클릭을 부르는 숏츠 제목 스타일
+3. 첫 2초 안에 "어? 뭐지?" 하고 궁금증을 유발하는 제목
+4. "~하는 이유", "~하면 안 되는 이유", "몰랐던 ~", "진짜 ~" 패턴 활용
 5. 이모지 금지
 6. "알아보겠습니다", "살펴보겠습니다" 같은 AI투 금지
+7. 원본 제목을 그대로 쓰지 말고, 숏츠에 맞게 새로 기획해
 
 키워드:
 {kw_text}
@@ -1222,11 +1344,13 @@ def collect_trends(source_filter: str | None = None) -> list[dict]:
     print("STEP 1: 트렌드 수집")
     print("=" * 60)
 
-    # v6.2: 네이트판/디시/인스티즈 제외 — 낚시성·커뮤니티 잡글 과다
+    # v10.1: 9개 소스 (커뮤니티 잡글 소스 제외)
     source_map = {
         "google": TrendSource.fetch_google_trends_rss,
         "naver": TrendSource.fetch_naver_realtime,
         "youtube": TrendSource.fetch_youtube_trending,
+        "youtube_api": TrendSource.fetch_youtube_shorts_api,
+        "twitter": TrendSource.fetch_twitter_trends,
         # "natepann": TrendSource.fetch_natepann,    # 제외
         # "dcinside": TrendSource.fetch_dcinside,    # 제외
         "ruliweb": TrendSource.fetch_ruliweb,
@@ -1301,7 +1425,7 @@ def main():
     )
     parser.add_argument(
         "--source", type=str, default=None,
-        help="특정 소스만 (google/naver/youtube/natepann/dcinside/ruliweb/instiz)",
+        help="특정 소스만 (google/naver/youtube/youtube_api/twitter/ruliweb)",
     )
     parser.add_argument(
         "--auto", action="store_true",
