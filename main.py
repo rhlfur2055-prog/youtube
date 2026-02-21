@@ -929,111 +929,105 @@ class ImageGenerator:
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         self._gen_count = 0
         self._used_photo_ids = set()
-        self._bing_creator = None  # Bing DALL-E 3 (lazy init)
-        self._bing_failed = False  # Bing 전체 실패 플래그
-        # v10.0: Kling AI image-to-video (첫/마지막 장면)
-        self._kling = KlingVideoGenerator()
-        if self._kling.available:
-            print(f"  🎬 Kling AI 연동 완료 (첫/마지막 장면 동영상화)")
-
-    def _get_bing_creator(self):
-        """Bing Image Creator 인스턴스 (lazy init, 브라우저 1개 재사용)"""
-        if self._bing_creator is None and not self._bing_failed:
-            try:
-                from bing_generator import BingImageCreator
-                self._bing_creator = BingImageCreator()
-            except Exception as e:
-                print(f"    ⚠️  Bing Creator 초기화 실패: {str(e)[:80]}")
-                self._bing_failed = True
-        return self._bing_creator
 
     def generate_scene_images(self, script_data: dict, work_dir: str) -> list[dict]:
         """
-        v6.0: 대본의 각 장면에 대해 웹툰 이미지 생성.
-        우선순위: Replicate FLUX → Bing DALL-E 3 → 재사용
-        Returns: [{"chunk_idx": 0, "end_idx": 2, "image_path": "...", "prompt": "..."}]
+        v12.0: 실제 영상 클리핑 전환 — AI 이미지 생성 최소화
+        우선순위: YouTube 클립(1순위) → Pexels 영상(2순위) → FLUX(3순위, 최후 수단)
+        Bing/Kling 완전 제거
+        Returns: [{"chunk_idx", "end_idx", "video_clip"|"image_path", "prompt"}]
         """
-        # ★ 캐릭터 일관성: 새 영상 시작 시 캐릭터 기억 리셋
         self._character_desc = ""
 
         script_lines = script_data.get("script", [])
         mood = script_data.get("mood", "")
+        topic = script_data.get("title", "")
 
         images_dir = os.path.join(work_dir, "_scene_images")
         os.makedirs(images_dir, exist_ok=True)
 
         results = []
         scene_groups = self._group_sentences(script_lines)
+        needed = len(scene_groups)
+
+        # ★ v12.0: YouTube 클립 사전 다운로드 (재시도 2회)
+        clip_pool = []
+        if topic:
+            for attempt in range(2):
+                try:
+                    clip_pool = self._download_youtube_clips(
+                        topic, work_dir, num_clips=needed + 5
+                    )
+                    if clip_pool:
+                        break
+                    print(f"    ⚠️  YouTube 클립 0개 → 재시도 ({attempt+1}/2)")
+                except Exception as yt_err:
+                    print(f"    ⚠️  YouTube 클립 실패 ({attempt+1}/2): {yt_err}")
+
+        # ★ YouTube 클립 부족 시 → Pexels 영상으로 보충
+        if len(clip_pool) < needed:
+            shortfall = needed - len(clip_pool)
+            print(f"    📹 YouTube 클립 부족 ({len(clip_pool)}/{needed}) → Pexels 영상 {shortfall}개 보충")
+            try:
+                pexels_clips = self._download_pexels_clips(
+                    topic, work_dir, num_clips=shortfall + 2
+                )
+                clip_pool.extend(pexels_clips)
+            except Exception as px_err:
+                print(f"    ⚠️  Pexels 영상 실패: {px_err}")
+
+        clip_idx = 0
 
         # 엔진 우선순위 표시
-        engines = []
+        engines = ["YouTube 클립", "Pexels 영상"]
         if self.replicate_token:
-            engines.append("Replicate FLUX")
-        engines.append("Bing DALL-E 3")
-        print(f"\n  🖼️  장면 이미지 생성 중... ({len(scene_groups)}장, mood={mood})")
+            engines.append("FLUX (최후 수단)")
+        print(f"\n  🖼️  장면 배경 생성 중... ({needed}장, mood={mood})")
         print(f"    엔진 우선순위: {' → '.join(engines)}")
-
-        bing_consecutive_fail = 0
-        last_success_path = ""  # ★ 직전 성공 이미지 경로 (Pexels 대신 재사용)
+        if clip_pool:
+            print(f"    🎬 클립 풀 총: {len(clip_pool)}개 준비됨")
 
         for gi, group in enumerate(scene_groups):
             raw_prompt = group.get("image_prompt", "")
             image_path = os.path.join(images_dir, f"scene_{gi:03d}.jpg")
             success = False
+            used_clip = None
 
-            # ── 1순위: Replicate FLUX-schnell ──
+            # ── 1순위: 클립 풀 (YouTube + Pexels) 배정 ──
+            if not success and clip_idx < len(clip_pool):
+                candidate = clip_pool[clip_idx]
+                if os.path.exists(candidate) and os.path.getsize(candidate) > 1000:
+                    used_clip = candidate
+                    clip_idx += 1
+                    success = True
+                    print(f"    ✅ [{gi+1}/{needed}] 🎬 클립: {os.path.basename(candidate)}")
+                else:
+                    clip_idx += 1  # 깨진 클립 건너뛰기
+
+            # ── 2순위: FLUX (최후 수단) ──
             if not success and self.replicate_token:
                 webtoon_prompt = self._build_webtoon_prompt(raw_prompt, group["texts"], mood)
                 webp_path = image_path.replace(".jpg", ".webp")
                 success = self._generate_replicate(webtoon_prompt, webp_path)
                 if success:
                     image_path = webp_path
-                    print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🤖 FLUX: {raw_prompt[:45]}...")
-                else:
-                    # ★ NSFW 차단 시 safe-for-work 프롬프트로 1회 재시도
-                    safe_prompt = (
-                        "safe for work, cartoon illustration, "
-                        + webtoon_prompt.replace("sexy", "").replace("nude", "")
-                        .replace("violence", "action").replace("blood", "red")
-                    )
-                    success = self._generate_replicate(safe_prompt, webp_path)
-                    if success:
-                        image_path = webp_path
-                        print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🤖 FLUX (SFW 재시도): {raw_prompt[:35]}...")
-
-            # ── 2순위: Bing Image Creator (DALL-E 3 웹툰) ──
-            if not success and not self._bing_failed and bing_consecutive_fail < 3:
-                webtoon_prompt = self._build_webtoon_prompt(raw_prompt, group["texts"], mood)
-                bing = self._get_bing_creator()
-                if bing:
-                    success = bing.generate_image(webtoon_prompt, image_path)
-                    if success:
-                        bing_consecutive_fail = 0
-                        print(f"    ✅ [{gi+1}/{len(scene_groups)}] 🎨 Bing: {raw_prompt[:45] or webtoon_prompt[80:125]}...")
-                    else:
-                        bing_consecutive_fail += 1
-                        if bing_consecutive_fail >= 3:
-                            print(f"    ⚠️  Bing 3회 연속 실패 → 폴백 전환")
-                            self._bing_failed = True
-
-            # ── 3순위: 직전 성공 이미지 재사용 (Pexels 스톡사진 → 화풍 깨짐 방지) ──
-            if not success and last_success_path and os.path.exists(last_success_path):
-                import shutil as _shutil
-                _shutil.copy2(last_success_path, image_path)
-                success = True
-                print(f"    ♻️  [{gi+1}/{len(scene_groups)}] 직전 이미지 재사용 (화풍 일관성 유지)")
+                    print(f"    ⚠️  [{gi+1}/{needed}] 🤖 FLUX 폴백: {raw_prompt[:40]}...")
 
             if success:
                 self._gen_count += 1
-                last_success_path = image_path  # ★ 성공한 이미지 경로 기억
-                results.append({
+                entry = {
                     "chunk_idx": group["start_idx"],
                     "end_idx": group["end_idx"],
-                    "image_path": image_path,
                     "prompt": raw_prompt or "auto",
-                })
+                }
+                if used_clip:
+                    entry["video_clip"] = used_clip
+                    entry["image_path"] = None
+                else:
+                    entry["image_path"] = image_path
+                results.append(entry)
             else:
-                print(f"    ⚠️  [{gi+1}] 이미지 실패 → 그라데이션 폴백")
+                print(f"    ❌ [{gi+1}/{needed}] 모든 소스 실패 → 그라데이션 폴백")
                 results.append({
                     "chunk_idx": group["start_idx"],
                     "end_idx": group["end_idx"],
@@ -1041,40 +1035,431 @@ class ImageGenerator:
                     "prompt": raw_prompt or "auto",
                 })
 
-            # 속도 조절 (Replicate 429 방지: 3초 딜레이)
-            if gi < len(scene_groups) - 1:
-                time.sleep(3)
-
-        # Bing 브라우저 종료
-        if self._bing_creator:
-            try:
-                self._bing_creator.close()
-            except Exception:
-                pass
-
-        ok_count = sum(1 for r in results if r["image_path"])
-        print(f"  ✅ 장면 이미지 완료: {ok_count}/{len(scene_groups)}장 생성")
-
-        # ★ v10.0: Kling AI — 첫/마지막 장면만 image-to-video 변환
-        if self._kling.available and results:
-            kling_targets = []
-            if results[0].get("image_path"):
-                kling_targets.append((0, results[0]))
-            if len(results) > 1 and results[-1].get("image_path"):
-                kling_targets.append((len(results) - 1, results[-1]))
-
-            for idx, r in kling_targets:
-                img_path = r["image_path"]
-                vid_path = img_path.rsplit(".", 1)[0] + "_kling.mp4"
-                prompt_text = r.get("prompt", "cinematic slow motion")
-                print(f"  🎬 Kling AI 동영상 변환 [{idx+1}/{len(results)}]...")
-                ok = self._kling.generate_video(img_path, prompt_text, vid_path)
-                if ok:
-                    r["kling_video"] = vid_path
-                else:
-                    print(f"    ⚠️  Kling 실패 → Bing 이미지 유지 (폴백)")
+        clip_count = sum(1 for r in results if r.get("video_clip"))
+        img_count = sum(1 for r in results if r.get("image_path"))
+        print(f"\n  ✅ 장면 배경 완료: 🎬 클립 {clip_count}장 + 🖼️ 이미지 {img_count}장 / {needed}장")
+        if clip_count == needed:
+            print(f"  🎉 전 장면 실제 영상 클립 사용!")
 
         return results
+
+    # ── YouTube 클립 검색/다운로드 (yt-dlp + FFmpeg) ──
+    # 한→영 동물 키워드 매핑 테이블
+    _ANIMAL_KR_EN = {
+        "고양이": "cat", "강아지": "puppy", "개": "dog", "호랑이": "tiger",
+        "사자": "lion", "늑대": "wolf", "여우": "fox", "곰": "bear",
+        "토끼": "rabbit", "다람쥐": "squirrel", "햄스터": "hamster",
+        "앵무새": "parrot", "독수리": "eagle", "펭귄": "penguin",
+        "돌고래": "dolphin", "고래": "whale", "상어": "shark",
+        "거북이": "turtle", "도마뱀": "lizard", "뱀": "snake",
+        "코끼리": "elephant", "기린": "giraffe", "하마": "hippo",
+        "코뿔소": "rhino", "판다": "panda", "코알라": "koala",
+        "원숭이": "monkey", "침팬지": "chimpanzee", "고릴라": "gorilla",
+        "수달": "otter", "미어캣": "meerkat", "카멜레온": "chameleon",
+        "물고기": "fish", "금붕어": "goldfish", "오리": "duck",
+        "닭": "chicken", "소": "cow", "말": "horse", "양": "sheep",
+        "돼지": "pig", "사슴": "deer", "너구리": "raccoon",
+        "까마귀": "crow", "참새": "sparrow", "올빼미": "owl",
+        "부엉이": "owl", "매": "hawk", "백조": "swan",
+        "플라밍고": "flamingo", "두더지": "mole", "개미": "ant",
+        "나비": "butterfly", "벌": "bee", "거미": "spider",
+        "악어": "crocodile", "치타": "cheetah", "표범": "leopard",
+        "하이에나": "hyena", "낙타": "camel", "물소": "buffalo",
+    }
+    _ACTION_KR_EN = {
+        "먹": "eating", "자": "sleeping", "뛰": "running", "걷": "walking",
+        "놀": "playing", "싸우": "fighting", "수영": "swimming", "날": "flying",
+        "울": "crying", "웃": "laughing", "숨": "hiding", "점프": "jumping",
+        "구르": "rolling", "핥": "licking", "긁": "scratching", "돌": "spinning",
+        "사냥": "hunting", "낚시": "fishing", "목욕": "bathing", "빙글": "spinning",
+    }
+
+    # 동물 카테고리별 검색어 매핑
+    _ANIMAL_SEARCH_STYLE = {
+        "cat": "cat funny behavior real video short clip",
+        "dog": "dog funny behavior real video short clip",
+        "puppy": "puppy cute behavior real video short clip",
+        "kitten": "kitten cute behavior real video short clip",
+        "tiger": "wild tiger behavior documentary short clip",
+        "lion": "wild lion behavior documentary short clip",
+        "wolf": "wild wolf behavior documentary short clip",
+        "fox": "wild fox behavior real video short clip",
+        "bear": "wild bear behavior documentary short clip",
+        "rabbit": "rabbit cute behavior real video short clip",
+        "hamster": "hamster funny behavior real video short clip",
+        "parrot": "parrot funny behavior real video short clip",
+        "penguin": "penguin funny behavior documentary short clip",
+        "dolphin": "dolphin behavior documentary short clip",
+        "whale": "whale behavior documentary short clip",
+        "shark": "shark behavior documentary short clip",
+        "turtle": "turtle funny behavior real video short clip",
+        "elephant": "elephant behavior documentary short clip",
+        "panda": "panda funny behavior real video short clip",
+        "koala": "koala funny behavior real video short clip",
+        "monkey": "monkey funny behavior real video short clip",
+        "otter": "otter cute behavior real video short clip",
+        "owl": "owl funny behavior real video short clip",
+        "deer": "deer behavior real video short clip",
+        "horse": "horse behavior real video short clip",
+    }
+
+    def _extract_search_keyword(self, topic: str) -> str:
+        """주제에서 YouTube 검색용 키워드 추출 — 실제 동물 영상 최적화"""
+        animal = ""
+        action = ""
+
+        # 1. 한글 동물 키워드 매핑
+        for kr, en in self._ANIMAL_KR_EN.items():
+            if kr in topic:
+                animal = en
+                break
+
+        # 2. 한글 동작 키워드 매핑
+        for kr, en in self._ACTION_KR_EN.items():
+            if kr in topic:
+                action = en
+                break
+
+        # 3. 영어 동물명 직접 탐지
+        if not animal:
+            _en_animals = [
+                "cat", "dog", "puppy", "kitten", "tiger", "lion", "wolf",
+                "fox", "bear", "rabbit", "hamster", "parrot", "penguin",
+                "dolphin", "whale", "shark", "turtle", "elephant", "giraffe",
+                "panda", "koala", "monkey", "otter", "owl", "eagle", "deer",
+                "horse", "cow", "pig", "duck", "chicken", "snake", "spider",
+                "crocodile", "cheetah", "leopard",
+            ]
+            topic_lower = topic.lower()
+            for a in _en_animals:
+                if a in topic_lower:
+                    animal = a
+                    break
+
+        # 4. 카테고리별 최적화된 검색어 반환
+        if animal and animal in self._ANIMAL_SEARCH_STYLE:
+            base = self._ANIMAL_SEARCH_STYLE[animal]
+            if action:
+                return f"{animal} {action} real video short clip"
+            return base
+        elif animal:
+            if action:
+                return f"{animal} {action} real video short clip"
+            return f"{animal} funny behavior real video short clip"
+        else:
+            # 동물 미감지 → 주제 자체 + "animal" 키워드
+            import re as _re
+            clean = _re.sub(r'[^\w\s]', '', topic)
+            words = clean.split()[:3]
+            base = " ".join(words) if words else "animal nature"
+            return f"{base} real video short clip"
+
+    def _download_youtube_clips(self, topic: str, work_dir: str,
+                                 num_clips: int = 15) -> list:
+        """
+        YouTube 영상 다운로드 → 구간별 3~5초 클립 추출 → 1080x1920 세로 크롭
+        - CC 우선, 없으면 일반 영상도 허용
+        - 영상당 최대 4개 클립 (다른 구간)
+        - 30초~10분 길이 필터
+        Returns: [clip_path, ...]
+        """
+        keyword = self._extract_search_keyword(topic)
+        clips_dir = os.path.join(work_dir, "_clips")
+        os.makedirs(clips_dir, exist_ok=True)
+        full_dir = os.path.join(clips_dir, "_full")
+        os.makedirs(full_dir, exist_ok=True)
+
+        print(f"\n  🎥 YouTube 클립 검색: \"{keyword}\"")
+
+        ytdlp_cmd = self._find_ytdlp_cmd()
+        output_template = os.path.join(full_dir, "%(id)s.%(ext)s")
+
+        # Step 1: CC 라이선스 우선 다운로드 (ytsearch5)
+        downloaded = False
+        search_queries = [
+            f"ytsearch5:{keyword}",                                  # 메인 검색
+            f"ytsearch3:{keyword.split()[0]} animal compilation",    # 컴필레이션
+        ]
+
+        for sq in search_queries:
+            cmd = ytdlp_cmd + [
+                sq,
+                "-f", "best[height>=720][ext=mp4]/best[height>=480][ext=mp4]/best[ext=mp4]/best",
+                "-o", output_template,
+                "--no-playlist",
+                "--max-filesize", "200M",
+                "--max-downloads", "4",
+                "--match-filters", "duration >= 30 & duration <= 600",
+                "--no-overwrites",
+                "--socket-timeout", "20",
+            ]
+            try:
+                print(f"    ⬇️  다운로드 중: {sq[:60]}...")
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=240,
+                    encoding="utf-8", errors="replace",
+                )
+                # 다운로드 파일 존재 확인
+                vfiles = [f for f in os.listdir(full_dir)
+                          if f.endswith((".mp4", ".mkv", ".webm"))]
+                if vfiles:
+                    downloaded = True
+                    break
+            except subprocess.TimeoutExpired:
+                print(f"    ⏰ 타임아웃 → 다음 검색어")
+            except FileNotFoundError:
+                print(f"    ❌ yt-dlp 미설치! pip install yt-dlp")
+                return []
+            except Exception as e:
+                print(f"    ⚠️  에러: {e}")
+
+        if not downloaded:
+            print(f"    ❌ YouTube 다운로드 실패")
+            return []
+
+        # 다운로드된 영상 수집
+        video_files = [
+            os.path.join(full_dir, f)
+            for f in os.listdir(full_dir)
+            if f.endswith((".mp4", ".mkv", ".webm"))
+        ]
+        print(f"    ✅ {len(video_files)}개 영상 다운로드 완료")
+
+        # Step 2: 각 영상에서 다양한 구간 클립 추출 (영상당 최대 4개)
+        clip_paths = []
+        clip_idx = 0
+        MAX_PER_VIDEO = 4
+
+        for vf in video_files:
+            duration = self._get_video_duration(vf)
+            if duration < 10:
+                print(f"      ⏭️  {os.path.basename(vf)}: {duration:.0f}초 (너무 짧음)")
+                continue
+
+            clips_this = min(MAX_PER_VIDEO, num_clips - clip_idx)
+            if clips_this <= 0:
+                break
+
+            # 균등 구간 분배: 영상을 N등분하여 각 구간에서 1개씩
+            segment_len = max(5, (duration - 2) / clips_this)
+            used_starts = []
+
+            for ci in range(clips_this):
+                # 구간 시작점: 각 세그먼트 내 랜덤
+                seg_start = 1.0 + ci * segment_len
+                seg_end = min(seg_start + segment_len - 1, duration - 5)
+                if seg_end <= seg_start:
+                    seg_end = seg_start + 1
+
+                start = random.uniform(seg_start, seg_end)
+                # 이전 클립과 최소 3초 간격
+                too_close = any(abs(start - ps) < 3 for ps in used_starts)
+                if too_close:
+                    start = min(start + 3, duration - 5)
+
+                clip_dur = random.uniform(3.0, 5.0)
+                if start + clip_dur > duration:
+                    clip_dur = max(2.0, duration - start - 0.5)
+
+                clip_path = os.path.join(clips_dir, f"clip_{clip_idx:03d}.mp4")
+                ffcmd = [
+                    FFMPEG_PATH, "-y",
+                    "-ss", f"{start:.2f}",
+                    "-i", vf,
+                    "-t", f"{clip_dur:.2f}",
+                    "-vf", "crop=ih*9/16:ih,scale=1080:1920",
+                    "-an",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    clip_path,
+                ]
+                try:
+                    r = subprocess.run(
+                        ffcmd, capture_output=True, text=True, timeout=60,
+                        encoding="utf-8", errors="replace",
+                    )
+                    if r.returncode == 0 and os.path.exists(clip_path) \
+                            and os.path.getsize(clip_path) > 5000:
+                        clip_paths.append(clip_path)
+                        used_starts.append(start)
+                        clip_idx += 1
+                except Exception:
+                    pass
+
+            print(f"      📹 {os.path.basename(vf)}: {len(used_starts)}개 클립 추출 ({duration:.0f}초)")
+
+        print(f"    🎬 YouTube 총 {len(clip_paths)}개 클립 추출 완료 (1080x1920)")
+        return clip_paths
+
+    def _download_pexels_clips(self, topic: str, work_dir: str,
+                                num_clips: int = 5) -> list:
+        """
+        Pexels Video API로 실제 영상 다운로드 → 3~5초 클립 추출
+        Returns: [clip_path, ...]
+        """
+        if not self.pexels_key:
+            print(f"    ⚠️  PEXELS_API_KEY 없음 → Pexels 영상 스킵")
+            return []
+
+        keyword = self._extract_search_keyword(topic)
+        # Pexels 검색용 간결한 키워드 (첫 2단어)
+        pexels_query = " ".join(keyword.split()[:2])
+
+        clips_dir = os.path.join(work_dir, "_clips")
+        os.makedirs(clips_dir, exist_ok=True)
+        pexels_dir = os.path.join(clips_dir, "_pexels")
+        os.makedirs(pexels_dir, exist_ok=True)
+
+        print(f"    📹 Pexels 영상 검색: \"{pexels_query}\"")
+
+        try:
+            import requests as _req
+            headers = {"Authorization": self.pexels_key}
+            params = {
+                "query": pexels_query,
+                "per_page": 5,
+                "orientation": "portrait",
+                "size": "medium",
+            }
+            resp = _req.get("https://api.pexels.com/videos/search",
+                           headers=headers, params=params, timeout=15)
+            if resp.status_code != 200:
+                print(f"    ⚠️  Pexels API 오류: {resp.status_code}")
+                return []
+
+            data = resp.json()
+            videos = data.get("videos", [])
+            if not videos:
+                # 동물 이름만으로 재검색
+                animal_only = pexels_query.split()[0]
+                params["query"] = animal_only
+                resp = _req.get("https://api.pexels.com/videos/search",
+                               headers=headers, params=params, timeout=15)
+                if resp.status_code == 200:
+                    videos = resp.json().get("videos", [])
+
+            if not videos:
+                print(f"    ⚠️  Pexels 검색 결과 없음")
+                return []
+
+            print(f"    ✅ Pexels 영상 {len(videos)}개 발견")
+
+        except Exception as e:
+            print(f"    ⚠️  Pexels API 에러: {e}")
+            return []
+
+        # 영상 다운로드 + 클립 추출
+        clip_paths = []
+        existing_clips = len([f for f in os.listdir(clips_dir)
+                             if f.startswith("clip_") and f.endswith(".mp4")])
+        clip_idx = existing_clips  # 기존 YouTube 클립 이어서 번호 매기기
+
+        for vi, video in enumerate(videos[:3]):
+            if len(clip_paths) >= num_clips:
+                break
+
+            # 최적 해상도 파일 URL 찾기
+            video_files = video.get("video_files", [])
+            best_file = None
+            for vf in sorted(video_files, key=lambda x: x.get("height", 0), reverse=True):
+                if vf.get("height", 0) >= 480:
+                    best_file = vf
+                    break
+            if not best_file and video_files:
+                best_file = video_files[0]
+            if not best_file:
+                continue
+
+            dl_url = best_file.get("link", "")
+            if not dl_url:
+                continue
+
+            # 다운로드
+            dl_path = os.path.join(pexels_dir, f"pexels_{vi}.mp4")
+            try:
+                import requests as _req
+                r = _req.get(dl_url, timeout=60, stream=True)
+                with open(dl_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            except Exception:
+                continue
+
+            duration = self._get_video_duration(dl_path)
+            if duration < 5:
+                continue
+
+            # 클립 추출 (최대 2개/영상)
+            clips_per = min(2, num_clips - len(clip_paths))
+            seg_len = max(3, (duration - 2) / clips_per)
+
+            for ci in range(clips_per):
+                start = 1.0 + ci * seg_len + random.uniform(0, max(0.5, seg_len - 5))
+                clip_dur = random.uniform(3.0, 5.0)
+                if start + clip_dur > duration:
+                    clip_dur = max(2.0, duration - start - 0.5)
+
+                clip_path = os.path.join(clips_dir, f"clip_{clip_idx:03d}.mp4")
+                ffcmd = [
+                    FFMPEG_PATH, "-y",
+                    "-ss", f"{start:.2f}",
+                    "-i", dl_path,
+                    "-t", f"{clip_dur:.2f}",
+                    "-vf", "crop=ih*9/16:ih,scale=1080:1920",
+                    "-an",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-pix_fmt", "yuv420p",
+                    clip_path,
+                ]
+                try:
+                    r = subprocess.run(
+                        ffcmd, capture_output=True, text=True, timeout=60,
+                        encoding="utf-8", errors="replace",
+                    )
+                    if r.returncode == 0 and os.path.exists(clip_path) \
+                            and os.path.getsize(clip_path) > 5000:
+                        clip_paths.append(clip_path)
+                        clip_idx += 1
+                except Exception:
+                    pass
+
+        print(f"    📹 Pexels 총 {len(clip_paths)}개 클립 추출 완료")
+        return clip_paths
+
+    @staticmethod
+    def _find_ytdlp_cmd() -> list:
+        """yt-dlp 실행 경로 자동 탐색"""
+        import shutil as _sh
+        if _sh.which("yt-dlp"):
+            return ["yt-dlp"]
+        scripts_dir = os.path.join(os.path.dirname(sys.executable), "Scripts")
+        ytdlp_exe = os.path.join(scripts_dir, "yt-dlp.exe")
+        if os.path.exists(ytdlp_exe):
+            return [ytdlp_exe]
+        return [sys.executable, "-m", "yt_dlp"]
+
+    @staticmethod
+    def _get_video_duration(video_path: str) -> float:
+        """FFmpeg stderr에서 Duration 파싱으로 영상 길이(초) 반환"""
+        try:
+            cmd = [
+                FFMPEG_PATH if FFMPEG_PATH else "ffmpeg",
+                "-i", video_path,
+                "-f", "null", "-",
+            ]
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+            )
+            # stderr에서 "Duration: HH:MM:SS.xx" 파싱
+            import re as _re
+            m = _re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
+            if m:
+                h, mi, s = float(m.group(1)), float(m.group(2)), float(m.group(3))
+                return h * 3600 + mi * 60 + s
+            return 0.0
+        except Exception:
+            return 0.0
 
     # ── 문장 그루핑 ──
     def _group_sentences(self, script_lines: list) -> list[dict]:
@@ -5235,8 +5620,8 @@ class VideoAssembler:
         scene_videos = scene_videos or []
         ai_images = ai_images or []
 
-        # 웹툰 모드 vs 비디오 모드 분기
-        has_images = any(img.get("image_path") for img in ai_images)
+        # 웹툰 모드 vs 비디오 모드 분기 (이미지 또는 클립이 있으면 웹툰 모드)
+        has_images = any(img.get("image_path") or img.get("video_clip") for img in ai_images)
         if has_images:
             return self._assemble_webtoon(script_data, chunks, ai_images, work_dir)
 
@@ -5976,13 +6361,14 @@ class VideoAssembler:
     def _assemble_webtoon(self, script_data: dict, chunks: list[dict],
                            ai_images: list[dict], work_dir: str) -> str:
         """
-        v7.0 웹툰형 쇼츠 조립
-        ─ 각 장면마다 AI 이미지 + Ken Burns 줌인/아웃
+        v11.0 웹툰형 쇼츠 조립
+        ─ video_clip 장면: YouTube 클립 프레임 직접 사용 (Ken Burns 스킵)
+        ─ image_path 장면: AI 이미지 + Ken Burns 줌인/아웃 (기존 호환)
         ─ 말풍선 스타일 자막 (하단 30%)
         ─ 장면 전환: 페이드
         """
         print(f"\n{'='*60}")
-        print(f"🎬 Stage 4: 영상 조립 (v7.0 웹툰 모드)")
+        print(f"🎬 Stage 4: 영상 조립 (v11.0 클립+웹툰 모드)")
         print(f"{'='*60}")
 
         # chunk_idx 삽입
@@ -5997,28 +6383,30 @@ class VideoAssembler:
         total_sec = total_ms / 1000
         total_frames = int(total_sec * self.config.fps)
 
-        # Step 2: 이미지 → 장면 타임라인 매핑
-        # ai_images: [{"chunk_idx": 0, "end_idx": 2, "image_path": "..."}]
-        scene_timeline = []  # [(start_ms, end_ms, image_path)]
+        # Step 2: 장면 타임라인 매핑 (이미지 or 클립)
+        # scene_timeline: [(start_ms, end_ms, img_path_or_None, clip_path_or_None)]
+        scene_timeline = []
         for img_info in ai_images:
             sidx = img_info["chunk_idx"]
             eidx = img_info["end_idx"]
             img_path = img_info.get("image_path")
+            clip_path = img_info.get("video_clip")
             if sidx < len(chunks) and eidx < len(chunks):
                 s_ms = chunks[sidx]["start_ms"]
                 e_ms = chunks[eidx]["end_ms"]
-                scene_timeline.append((s_ms, e_ms, img_path))
-        # 빈 구간 처리: 시작 전, 끝 후
+                scene_timeline.append((s_ms, e_ms, img_path, clip_path))
         if not scene_timeline:
-            scene_timeline = [(0, total_ms, None)]
+            scene_timeline = [(0, total_ms, None, None)]
 
-        # Step 3: 이미지 로드 + Ken Burns 프레임 렌더링
-        print(f"  🖼️  {total_frames}프레임 렌더링 중 (웹툰 + Ken Burns)...")
+        # Step 3: 프레임 렌더링
+        clip_count = sum(1 for st in scene_timeline if st[3])
+        img_count = sum(1 for st in scene_timeline if st[2])
+        print(f"  🖼️  {total_frames}프레임 렌더링 중 (클립 {clip_count}장 + 이미지 {img_count}장)...")
 
         frames_dir = os.path.join(work_dir, "frames")
         os.makedirs(frames_dir, exist_ok=True)
 
-        # 이미지 캐시
+        # 이미지 캐시 (이미지 장면용)
         img_cache = {}
         for st in scene_timeline:
             ipath = st[2]
@@ -6030,12 +6418,22 @@ class VideoAssembler:
                 except Exception:
                     img_cache[ipath] = None
 
-        # 장면 전환 시간 계산 (장면별 highlight/emotion 매핑)
+        # ★ 클립 프레임 캐시: 각 클립의 전체 프레임을 미리 추출
+        clip_frame_cache = {}  # {clip_path: [PIL.Image, ...]}
+        for st in scene_timeline:
+            clip_path = st[3]
+            if clip_path and clip_path not in clip_frame_cache and os.path.exists(clip_path):
+                clip_frame_cache[clip_path] = self._extract_clip_frames(
+                    clip_path, self.config.fps, self.w, self.h
+                )
+
+        # 장면 전환 시간 계산
         _scene_highlights = {}
         for img_info in ai_images:
             sidx = img_info["chunk_idx"]
             if sidx < len(chunks):
-                _scene_highlights[img_info.get("image_path")] = chunks[sidx].get("highlight", False)
+                key = img_info.get("video_clip") or img_info.get("image_path")
+                _scene_highlights[key] = chunks[sidx].get("highlight", False)
 
         prev_scene_idx = -1
         prev_frame = None
@@ -6045,62 +6443,71 @@ class VideoAssembler:
 
             # 현재 장면 찾기
             current_img_path = None
+            current_clip_path = None
             scene_start_ms = 0
             scene_end_ms = total_ms
             scene_idx = 0
-            for si, (s_ms, e_ms, ipath) in enumerate(scene_timeline):
+            for si, (s_ms, e_ms, ipath, cpath) in enumerate(scene_timeline):
                 if s_ms <= current_ms <= e_ms:
                     current_img_path = ipath
+                    current_clip_path = cpath
                     scene_start_ms = s_ms
                     scene_end_ms = e_ms
                     scene_idx = si
                     break
 
-            # 배경 이미지 로드
-            base_img = img_cache.get(current_img_path)
-            if base_img:
-                frame = base_img.copy()
-            else:
-                frame = self._create_cinematic_gradient(
-                    self._get_current_emotion(chunks, current_ms))
-
-            # Ken Burns 효과 (v9.0 감정 연동)
             cur_emotion = self._get_current_emotion(chunks, current_ms)
-            frame = self._apply_ken_burns(frame, current_ms,
-                                           scene_start_ms, scene_end_ms, scene_idx,
-                                           emotion=cur_emotion)
+
+            # ★ 클립 장면: 클립 프레임 직접 사용 (Ken Burns 스킵)
+            if current_clip_path and current_clip_path in clip_frame_cache:
+                clip_frames = clip_frame_cache[current_clip_path]
+                if clip_frames:
+                    elapsed_in_scene_ms = current_ms - scene_start_ms
+                    # 클립 내 프레임 인덱스 (루프 재생)
+                    clip_frame_idx = int((elapsed_in_scene_ms / 1000.0) * self.config.fps)
+                    clip_frame_idx = clip_frame_idx % len(clip_frames)
+                    frame = clip_frames[clip_frame_idx].copy()
+                else:
+                    frame = self._create_cinematic_gradient(cur_emotion)
+            else:
+                # 이미지 장면: 기존 Ken Burns 로직
+                base_img = img_cache.get(current_img_path)
+                if base_img:
+                    frame = base_img.copy()
+                else:
+                    frame = self._create_cinematic_gradient(cur_emotion)
+
+                frame = self._apply_ken_burns(frame, current_ms,
+                                               scene_start_ms, scene_end_ms, scene_idx,
+                                               emotion=cur_emotion)
 
             # ★ 장면 전환 효과 (crossfade / 흑백→컬러 / 빠른컷)
+            scene_key = current_clip_path or current_img_path
             if scene_idx != prev_scene_idx and prev_scene_idx >= 0 and prev_frame:
                 elapsed_in_scene = current_ms - scene_start_ms
-                is_highlight = _scene_highlights.get(current_img_path, False)
+                is_highlight = _scene_highlights.get(scene_key, False)
 
                 if cur_emotion == "shocked":
-                    # shocked: 빠른 컷 0.1초 (3프레임)
                     trans_ms = 100
                 elif is_highlight:
-                    # highlight: 흑백→컬러 전환 0.3초
                     trans_ms = 300
                 else:
-                    # 기본: crossfade 0.3초
                     trans_ms = 300
 
                 if elapsed_in_scene < trans_ms:
                     blend_ratio = elapsed_in_scene / trans_ms
                     if is_highlight and cur_emotion != "shocked":
-                        # 흑백→컬러: 이전 프레임을 흑백으로 변환 후 블렌드
                         from PIL import ImageOps
                         gray_prev = ImageOps.grayscale(prev_frame).convert("RGB")
                         frame = Image.blend(gray_prev, frame, blend_ratio)
                     else:
-                        # 일반 crossfade
                         frame = Image.blend(prev_frame, frame, blend_ratio)
 
             if scene_idx != prev_scene_idx:
                 prev_scene_idx = scene_idx
             prev_frame = frame.copy()
 
-            # Dimming (이미지 위 자막 가독성)
+            # Dimming (자막 가독성)
             overlay_dim = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 50))
             frame = frame.convert("RGBA")
             frame = Image.alpha_composite(frame, overlay_dim).convert("RGB")
@@ -6176,8 +6583,56 @@ class VideoAssembler:
         size_mb = os.path.getsize(output_path) / (1024 * 1024)
         print(f"  ✅ 영상 완성! {output_path} ({size_mb:.1f}MB)")
 
+        # 클립 프레임 캐시 해제 (메모리 절약)
+        clip_frame_cache.clear()
+
         shutil.rmtree(frames_dir, ignore_errors=True)
         return output_path
+
+    def _extract_clip_frames(self, clip_path: str, fps: int,
+                              target_w: int, target_h: int) -> list:
+        """
+        비디오 클립에서 전체 프레임을 PIL Image 리스트로 추출.
+        FFmpeg로 프레임 → JPG 추출 후 PIL로 로드.
+        """
+        clip_frames_dir = clip_path + "_frames"
+        os.makedirs(clip_frames_dir, exist_ok=True)
+
+        frame_pattern = os.path.join(clip_frames_dir, "f_%05d.jpg")
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-i", clip_path,
+            "-vf", f"fps={fps},scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}",
+            "-q:v", "3",
+            frame_pattern,
+        ]
+        try:
+            subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60,
+                encoding="utf-8", errors="replace",
+            )
+        except Exception as e:
+            print(f"    ⚠️  클립 프레임 추출 실패: {e}")
+            return []
+
+        frames = []
+        idx = 1
+        while True:
+            fpath = os.path.join(clip_frames_dir, f"f_{idx:05d}.jpg")
+            if not os.path.exists(fpath):
+                break
+            try:
+                img = Image.open(fpath).convert("RGB")
+                if img.size != (target_w, target_h):
+                    img = img.resize((target_w, target_h), Image.LANCZOS)
+                frames.append(img)
+            except Exception:
+                pass
+            idx += 1
+
+        # 임시 프레임 파일 정리
+        shutil.rmtree(clip_frames_dir, ignore_errors=True)
+        return frames
 
     # ── v9.0 감정 연동 Ken Burns 모션 프로필 ──
     _MOTION_PROFILES = {
