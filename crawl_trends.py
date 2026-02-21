@@ -475,27 +475,39 @@ class TrendSource:
     def fetch_youtube_shorts_api() -> list[dict]:
         """YouTube Data API v3 — 한국 인기 숏츠 상위 50개 (YOUTUBE_API_KEY)"""
         results = []
-        api_key = os.getenv("YOUTUBE_API_KEY", "")
-        if not api_key:
-            print("  [WARN] YOUTUBE_API_KEY 없음 -- YouTube Shorts API 스킵")
+        # 두 키 모두 시도 (만료 대비)
+        api_keys = [k for k in [
+            os.getenv("YOUTUBE_API_KEY", ""),
+            os.getenv("GOOGLE_API_KEY", ""),
+        ] if k]
+        if not api_keys:
+            print("  [WARN] YOUTUBE_API_KEY/GOOGLE_API_KEY 없음 -- YouTube Shorts API 스킵")
+            return results
+
+        resp = None
+        for api_key in api_keys:
+            try:
+                resp = requests.get(
+                    "https://www.googleapis.com/youtube/v3/videos",
+                    params={
+                        "part": "snippet,contentDetails,statistics",
+                        "chart": "mostPopular",
+                        "regionCode": "KR",
+                        "maxResults": 50,
+                        "key": api_key,
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    break
+                print(f"  [WARN] YouTube API 키 실패 ({api_key[:10]}...): {resp.text[:80]}")
+            except Exception as e:
+                print(f"  [WARN] YouTube API 요청 실패: {e}")
+        if not resp or resp.status_code != 200:
+            print(f"  [WARN] YouTube API 전체 실패")
             return results
 
         try:
-            # Step 1: 인기 동영상 50개 가져오기
-            resp = requests.get(
-                "https://www.googleapis.com/youtube/v3/videos",
-                params={
-                    "part": "snippet,contentDetails,statistics",
-                    "chart": "mostPopular",
-                    "regionCode": "KR",
-                    "maxResults": 50,
-                    "key": api_key,
-                },
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                print(f"  [WARN] YouTube API HTTP {resp.status_code}: {resp.text[:100]}")
-                return results
 
             data = resp.json()
             items = data.get("items", [])
