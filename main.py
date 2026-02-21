@@ -874,35 +874,32 @@ class ImageGenerator:
     ─ 용도: 대본 문장별 시각화 이미지 → Ken Burns 효과 적용
     """
 
-    # ── 웹툰 프롬프트 엔지니어링 (★ 한국 B급 웹툰 특화) ──
+    # ── 이미지 프롬프트 엔지니어링 (★ 동물 실사 다큐멘터리 특화) ──
     WEBTOON_PREFIX = (
-        "Korean Naver webtoon realistic slice-of-life illustration, "
-        "thick clean ink outlines, muted warm realistic color palette, "
-        "realistic human proportions, detailed Korean facial features, "
-        "realistic detailed Korean everyday background setting, "
-        "warm dim natural lighting, moody cinematic tone, "
-        "consistent character design throughout, "
+        "photorealistic wildlife documentary photography, "
+        "National Geographic style, BBC Earth quality, "
+        "sharp focus on animal subject, natural habitat, "
+        "dramatic cinematic lighting, 4k ultra detail, "
+        "vertical 9:16 composition, "
         "absolutely NO text NO letters NO words NO writing NO watermark on the image, "
-        "AVOID Japanese anime, AVOID big round eyes, AVOID chibi proportions, "
+        "NO cartoon, NO anime, NO illustration, NO drawing, NO webtoon, "
     )
     WEBTOON_NEGATIVE = (
-        "Japanese anime, anime eyes, chibi, kawaii, moe, manga, "
-        "pastel colors, sparkly eyes, "
-        "photorealistic, photograph, 3d render, "
+        "cartoon, anime, illustration, drawing, webtoon, manga, "
+        "chibi, kawaii, moe, comic, painted, artistic, "
         "text, letters, words, writing, caption, subtitle, "
-        "watermark, signature, logo, blurry, low quality, "
-        "Japanese text, kanji, hiragana, katakana, Chinese characters"
+        "watermark, signature, logo, blurry, low quality"
     )
 
-    # 무드별 스타일 보강 (★ 한국 현실 고증 / 고독 / 무거운 톤)
+    # 무드별 스타일 보강 (★ 동물 다큐멘터리 톤)
     MOOD_STYLE = {
-        "angry": "dark red shadows, character gritting teeth in dim smoky room, oppressive tense atmosphere, ",
-        "funny": "dim warm lighting, character with exhausted bitter smirk, dark humor irony, not cheerful, ",
-        "sad": "cold blue darkness, character alone staring at empty soju glass, heavy lonely silence, ",
-        "touching": "faint warm light in darkness, character with weary but relieved eyes, bittersweet moment, ",
-        "scary": "pitch dark shadows, character pale with cold sweat, dread and isolation, ",
-        "shocking": "harsh single spotlight in darkness, character frozen with hollow stare, devastating realization, ",
-        "satisfying": "dim moody lighting, character with tired but defiant smirk, quiet victory alone, ",
+        "angry": "intense predator gaze, dramatic red backlight, tense wild atmosphere, ",
+        "funny": "cute animal expression, warm golden hour lighting, playful moment, ",
+        "sad": "lonely animal in rain, cold blue tones, melancholic atmosphere, ",
+        "touching": "mother and baby animal, warm soft sunlight, tender moment, ",
+        "scary": "nocturnal predator eyes glowing in dark, eerie moonlight, ",
+        "shocking": "extreme close-up of animal face, dramatic single spotlight, frozen moment, ",
+        "satisfying": "majestic animal in golden light, triumphant pose, epic landscape, ",
     }
 
     # Pexels 폴백용 키워드 매핑
@@ -1122,10 +1119,13 @@ class ImageGenerator:
         if self._character_desc:
             char_suffix = f", same character as before: {self._character_desc}"
 
+        # v10.2: 동물 실사 강제 접미사
+        _PHOTO_SUFFIX = ", photorealistic, NO anime, NO cartoon, NO illustration, wildlife photography, 4k, vertical 9:16"
+
         if image_prompt:
             # image_prompt → 영어 확인/변환 (v10: Gemini가 영어로 출력하면 바로 통과)
             en_prompt = self._auto_en_prompt_from_kr(image_prompt, mood)
-            full = f"{self.WEBTOON_PREFIX}{mood_style}{en_prompt}{char_suffix}"
+            full = f"{self.WEBTOON_PREFIX}{mood_style}{en_prompt}{char_suffix}{_PHOTO_SUFFIX}"
             # 첫 장면이면 캐릭터 묘사 기억
             if not self._character_desc and en_prompt:
                 self._character_desc = en_prompt[:120]
@@ -1133,7 +1133,7 @@ class ImageGenerator:
 
         # 한글 텍스트 → 자동 영어 변환
         en_prompt = self._auto_en_prompt(texts, mood)
-        full = f"{self.WEBTOON_PREFIX}{mood_style}{en_prompt}{char_suffix}"
+        full = f"{self.WEBTOON_PREFIX}{mood_style}{en_prompt}{char_suffix}{_PHOTO_SUFFIX}"
         if not self._character_desc and en_prompt:
             self._character_desc = en_prompt[:120]
         return full
@@ -3597,51 +3597,72 @@ class ScriptGenerator:
     # v6.1 → v6.2: Claude → Gemini 롤백 (크레딧 부족 이슈)
     GEMINI_MODEL = "gemini-2.0-flash"
 
-    # ── [0/3] DIRECTOR_PERSONA: 모든 테마 공통 상위 페르소나 ──
-    DIRECTOR_PERSONA = """당신은 전 세계 숏츠 트렌드를 실시간으로 분석하는 '바이럴 콘텐츠 디렉터'입니다.
-단순히 대본을 쓰는 것이 아니라, 시청자가 화면을 멈추고 끝까지 보게 만드는 '후킹의 기술'과 '시각적 충격'을 설계합니다.
+    # ── [0/3] DIRECTOR_PERSONA: 동물 전문 숏츠 PD ──
+    DIRECTOR_PERSONA = """당신은 동물 전문 유튜브 숏츠 PD입니다.
+채널 컨셉: 동물 행동의 비밀, 충격, 반전
 
-[3단계 분석 프로세스]
-Step 1. 트렌드 분석: 이 주제가 왜 숏츠에서 터질 수 있는지(공감/분노/호기심/유익함) 이유를 한 줄로 정의.
-Step 2. 숏츠 4-Scene Formula:
-  - 0~3초 (도파민 후킹): 시청자의 상식을 파괴하거나 강한 공감을 유발하는 첫 문장.
-  - 4~15초 (빌드업): "왜?"라는 의문이 해소되기 직전까지 텐션 유지.
-  - 16~50초 (임팩트 팩트): 핵심 정보나 반전을 임팩트 있게 전달.
-  - 51~60초 (댓글 유도): 정답을 맞히거나 의견이 갈리게 만들어 댓글창을 터뜨리는 전략.
-Step 3. AI 시각화: 모든 image_prompt는 영어로, 아래 키워드를 조합해 '요즘 감성' 유지.
-  기본 키워드: Cinematic, 8k, Trendy Aesthetic, Moody Lighting, High Contrast
+[절대 금지 - 이미지]
+- 애니메이션 절대 금지
+- 웹툰 절대 금지
+- 일러스트 절대 금지
+- 만화 스타일 절대 금지
+- cartoon, anime, illustrated, drawing 절대 금지
 
-[Pace 규칙] 1초당 3.5음절. 한 문장 20자 이내. 불필요한 미사여구 삭제.
+[image_prompt 스타일 - 반드시 아래만 사용]
+- wildlife documentary photography style
+- National Geographic photo style
+- photorealistic animal close-up
+- nature documentary footage style
+- BBC Earth documentary style
 
-주의: Step 1의 트렌드 분석 결과는 JSON에 포함하지 마. 대본 JSON만 출력."""
+[image_prompt 예시]
+고양이: "Extreme close-up of cat eyes glowing, photorealistic, National Geographic style, dramatic lighting, vertical 9:16, 4k"
+강아지: "Golden retriever running in slow motion, BBC Earth documentary style, natural lighting, photorealistic, vertical 9:16, 4k"
+야생동물: "Wild wolf howling at night, wildlife photography, moonlight, photorealistic, National Geographic, vertical 9:16, 4k"
 
-    # v6.2: Gemini 롤백 — DIRECTOR_PERSONA를 시스템 프롬프트로 사용
+[장면 구성]
+- 장면 수: 13~15개 (55~65초)
+- 텍스트: 12자 이내
+- highlight: true 최대 2개
+- Same character as scene 1 절대 금지
+- 매 장면 다른 동물 각도/상황
+
+[감정 흐름]
+1~2장면: "설마?" 궁금증 유발
+3~5장면: 배경 설명
+6~9장면: 핵심 반전 정보
+10~12장면: 과학적 근거
+13~15장면: 결론 + 댓글 유도 ("여러분도 겪어봤나요?")
+
+[출력]
+JSON만. 다른 텍스트 없음."""
+
+    # v10.2: 동물 전문 시스템 프롬프트
     SYSTEM_PROMPT = DIRECTOR_PERSONA
 
-    # ── [1/3] ROLE_PROMPT: 핵심 역할 + 말투 ──
-    ROLE_PROMPT = """너는 자극적인 커뮤니티 이슈를 전달하는 스토리텔러야.
-찐친한테 카톡으로 분노 토하듯 말하는 스타일.
+    # ── [1/3] ROLE_PROMPT: 동물 전문 스토리텔러 ──
+    ROLE_PROMPT = """너는 동물 행동의 비밀을 알려주는 스토리텔러야.
+친구한테 "야 이거 알아?" 하듯 신기한 동물 팩트를 전달하는 스타일.
 
 [핵심 규칙 3개]
-1. 첫 문장 = 12자 이내 강렬한 감탄/질문 ("아 진짜 미쳤음" "이게 사람이냐")
-2. 감정 롤러코스터 필수: shocked→sad→tension→angry→funny→neutral (6종+ 사용, 같은 감정 2연속까지만)
-3. highlight는 최대 2개만 true. 진짜 핵심 반전/펀치라인만.
+1. 첫 문장 = 12자 이내 궁금증 유발 ("고양이가 빙글 돌면?" "이거 아는 사람 없음")
+2. 감정 흐름: surprise→neutral→tension→shocked→warm (5종+ 사용, 같은 감정 2연속까지만)
+3. highlight는 최대 2개만 true. 핵심 반전 팩트에만.
 
 [말투]
-- 어미: ~임, ~음, ~거든, ~잖아, ~인데 (반말 통일)
-- 추임새: 아니, 진짜, ㅋㅋㅋ, ㄹㅇ, 아 근데, 헐
+- 어미: ~거든, ~잖아, ~인데, ~래요, ~한대 (친근한 반말)
+- 추임새: 아니, 진짜, 근데, 알고보니, 실제로
 - 금지어: 흥미롭, 놀라운, 충격적, 알아보겠, 살펴보겠, 결론적으로, 하겠습니다
-- text 한국어만 15자 이내. image_prompt 영어만.
+- text 한국어만 12자 이내. image_prompt 영어만.
 
 [image_prompt — 절대 규칙]
-- 주제와 100% 연관된 장면만 묘사 (무관한 이미지 금지)
+- 동물 실사 사진 스타일만! 웹툰/만화/일러스트 절대 금지!
 - "Same character as scene 1" 절대 금지! 매 장면 독립적 묘사.
-- 매 장면 카메라 앵글 달라야 함: extreme close-up / bird's eye / low angle / wide shot / over-the-shoulder / dutch angle / tracking shot
-- 기본: Cinematic, 8k, High Contrast, Korean webtoon style, bold outlines
-- 첫 장면: "Young Korean [성별], [머리], [체형], [옷], [표정], extreme close-up, cinematic lighting, 8k, Korean webtoon style"
-- 이후 장면: 캐릭터 외모를 매번 직접 묘사 (키, 머리, 옷 반복 OK)
-- 표정: jaw dropped / face burning red / veins popping / tears streaming
-- 조명: cinematic lighting, high contrast, dramatic red backlight / single spotlight"""
+- 매 장면 카메라 앵글 달라야 함: extreme close-up / bird's eye / low angle / wide shot / macro / tracking shot
+- 기본: photorealistic, National Geographic style, 4k, dramatic lighting
+- 동물 묘사: 종, 색깔, 표정, 행동, 환경 구체적 묘사
+- 조명: natural lighting / golden hour / moonlight / dramatic spotlight
+- cartoon, anime, webtoon, illustrated, drawing 단어 절대 사용 금지"""
 
     # ── [2/3] FORMAT_SPEC: JSON 스키마 (간결하게) ──
     FORMAT_SPEC = """{
@@ -3659,7 +3680,7 @@ Step 3. AI 시각화: 모든 image_prompt는 영어로, 아래 키워드를 조�
       "pause_ms": 800,
       "important_words": ["핵심단어"],
       "direction": "BGM+연출 지시 (한국어)",
-      "image_prompt": "영어 장면 묘사 (English only, 주제 연관 필수, Same character 금지, 카메라 앵글 매번 다르게)",
+      "image_prompt": "영어 장면 묘사 (English only, photorealistic wildlife photography, NO cartoon/anime/webtoon, Same character 금지, 카메라 앵글 매번 다르게)",
       "sfx": "gasp",
       "sfx_volume": 0.4
     }
@@ -3669,29 +3690,29 @@ emotion 허용값: neutral, tension, surprise, angry, sad, funny, shocked, excit
 sfx 허용값: laugh, rimshot, boing, punch, glass_break, thunder, dramatic_stinger, whoosh, ding, swoosh, gasp, crowd_ooh, record_scratch, kakao_alert, typing, ddiyong (없으면 "")
 highlight: 최대 2개만 true. 나머지는 false."""
 
-    # ── [3/3] CONTENT_RULES: 구조 + 금지사항 (핵심만) ──
-    CONTENT_RULES = """[Pace] 1초당 3.5음절. 한 문장 15자 이내 엄수. 미사여구 삭제.
+    # ── [3/3] CONTENT_RULES: 동물 콘텐츠 구조 ──
+    CONTENT_RULES = """[Pace] 1초당 3.5음절. 한 문장 12자 이내 엄수. 미사여구 삭제.
 
-[대본 구조 — 12~15개 장면 (60초 목표)]
-Act1 훅 (1~2문장): shocked/excited. 첫문장 12자↓. sfx: gasp or glass_break. pause_ms: 0.
-Act2 빌드업 (3~5문장): sad→tension. 공감 디테일. direction에 "불협화음 BGM" 명시.
-Act3 피크 (2~3문장): angry. 감정 폭발. sfx: punch. pause_ms: 800~1200 (음소거 효과). highlight: true.
-Act4 반전 (2~3문장): funny/relief. 카타르시스. sfx: dramatic_stinger or rimshot.
-Act5 CTA (1문장): neutral. 댓글 유도 질문. pause_ms: 0.
+[대본 구조 — 13~15개 장면 (55~65초 목표)]
+Act1 궁금증 (1~2문장): surprise. 첫문장 12자↓. "설마?" 유발. sfx: gasp.
+Act2 배경 (3~5문장): neutral→tension. 동물 행동 관찰 묘사. direction에 "자연 다큐 BGM" 명시.
+Act3 반전 팩트 (3~4문장): shocked. 과학적 사실 공개. sfx: dramatic_stinger. highlight: true.
+Act4 근거 (2~3문장): serious→warm. 연구 결과나 과학 근거.
+Act5 CTA (1문장): neutral. "여러분도 겪어봤나요?" 댓글 유도. pause_ms: 0.
 
 [필수 체크]
-- 같은 감정 최대 2연속. 6종류+ 감정 사용.
-- highlight: 최대 2개만 (Act3 피크 + Act4 반전에만)
-- important_words: 매 문장 1~2개. 금액/인물/핵심명사.
-- direction: 매 장면 BGM 상태 명시 ("브금 유지" "브금 멈춤" "비장한 음악 IN")
-- sfx: 전체 3~5개만 (매 장면 넣지 마. 피크에만.)
-- CTA 마지막 문장 = 매번 다른 형식 (질문/도발/고백/제안 등 다양하게)
+- 같은 감정 최대 2연속. 5종류+ 감정 사용.
+- highlight: 최대 2개만 (Act3 반전에만)
+- important_words: 매 문장 1~2개. 동물이름/행동/핵심명사.
+- direction: 매 장면 BGM 상태 명시 ("자연 BGM 유지" "BGM 멈춤" "서스펜스 IN")
+- sfx: 전체 2~4개만. 피크에만.
+- image_prompt: 반드시 photorealistic, wildlife photography 스타일. cartoon/anime 절대 금지.
 
 [금지]
-- 원문에 없는 수치/대화 창작
+- cartoon, anime, webtoon, illustrated 단어 사용
 - 실명, 보도체, 좋아요/구독 유도
-- 시즌 지난 소재 (설날/추석/크리스마스)
-- highlight 전부 true (반드시 대부분 false)"""
+- highlight 전부 true (반드시 대부분 false)
+- 근거 없는 동물 팩트 창작"""
 
     # ── few-shot 예시 (실제 JSON으로 — Gemini가 정확히 따라하도록) ──
     FEW_SHOT_EXAMPLES = """[예시 — 이 JSON 형식을 정확히 따라해]
@@ -4009,62 +4030,62 @@ CTA (1문장): relief/warm. "알고 있었음?" / "이것도 궁금하면 팔로
                     "분노와 반전을 강조해서 작성해줘."
                 ),
                 "build_prompt_suffix": "위 소스를 바탕으로 분노와 반전을 강조한 1인칭 썰 형식의 숏츠 대본을 JSON으로 출력해.",
-                "image_style": "Cinematic, 8k, High Contrast, Korean webtoon style, bold outlines",
+                "image_style": "photorealistic wildlife photography, National Geographic style, 4k, sharp focus",
                 "quality_params": {
                     "min_emotion_types": 4, "max_highlight_ratio": 0.30,
                     "max_long_sentence_count": 2, "long_sentence_threshold": 12,
-                    "min_sentence_count": 6, "max_first_sentence_len": 12,
+                    "min_sentence_count": 10, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 2,
                 },
             },
             "life_hack": {
-                "ROLE_PROMPT": self._LIFE_HACK_ROLE, "FORMAT_SPEC": self._LIFE_HACK_FORMAT,
-                "CONTENT_RULES": self._LIFE_HACK_RULES, "FEW_SHOT_EXAMPLES": self._LIFE_HACK_FEWSHOT,
+                "ROLE_PROMPT": self.ROLE_PROMPT, "FORMAT_SPEC": self.FORMAT_SPEC,
+                "CONTENT_RULES": self.CONTENT_RULES, "FEW_SHOT_EXAMPLES": self.FEW_SHOT_EXAMPLES,
                 "padded_instruction": (
-                    "이 주제로 꿀팁 대본을 써줘. "
-                    "서론 빼고 바로 '방법'부터 임팩트 있게 설명해줘. "
+                    "이 주제로 동물 관련 꿀팁/정보 대본을 써줘. "
+                    "서론 빼고 바로 핵심 정보부터 임팩트 있게 설명해줘. "
                     "시청자가 저장하고 싶게 만들어야 해."
                 ),
-                "build_prompt_suffix": "위 소스를 바탕으로 서론 없이 바로 방법부터 임팩트 있는 꿀팁 숏츠 대본을 JSON으로 출력해.",
-                "image_style": "Cinematic close-up, 8k resolution, clean bright lighting, minimalist, trendy aesthetic",
+                "build_prompt_suffix": "위 소스를 바탕으로 서론 없이 바로 핵심부터 임팩트 있는 동물 정보 숏츠 대본을 JSON으로 출력해.",
+                "image_style": "photorealistic wildlife photography, National Geographic style, 4k, sharp focus",
                 "quality_params": {
                     "min_emotion_types": 3, "max_highlight_ratio": 0.35,
                     "max_long_sentence_count": 2, "long_sentence_threshold": 12,
-                    "min_sentence_count": 6, "max_first_sentence_len": 12,
+                    "min_sentence_count": 10, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 2,
                 },
             },
             "empathy": {
-                "ROLE_PROMPT": self._EMPATHY_ROLE, "FORMAT_SPEC": self._EMPATHY_FORMAT,
-                "CONTENT_RULES": self._EMPATHY_RULES, "FEW_SHOT_EXAMPLES": self._EMPATHY_FEWSHOT,
+                "ROLE_PROMPT": self.ROLE_PROMPT, "FORMAT_SPEC": self.FORMAT_SPEC,
+                "CONTENT_RULES": self.CONTENT_RULES, "FEW_SHOT_EXAMPLES": self.FEW_SHOT_EXAMPLES,
                 "padded_instruction": (
-                    "이 주제로 일상 공감 대본을 써줘. "
-                    "MBTI나 직장 생활 등 누구나 겪을 법한 상황을 "
-                    "'내 이야기'처럼 친근하게 써줘."
+                    "이 주제로 동물과 반려동물 공감 대본을 써줘. "
+                    "반려인이라면 누구나 공감할 상황을 "
+                    "친근하게 써줘."
                 ),
-                "build_prompt_suffix": "위 소스를 바탕으로 누구나 공감할 수 있는 '내 이야기' 느낌의 숏츠 대본을 JSON으로 출력해.",
-                "image_style": "Anime style, vibrant colors, high contrast, expressive, trendy aesthetic",
+                "build_prompt_suffix": "위 소스를 바탕으로 반려인이 공감할 수 있는 동물 숏츠 대본을 JSON으로 출력해.",
+                "image_style": "photorealistic wildlife photography, warm lighting, 4k, sharp focus",
                 "quality_params": {
                     "min_emotion_types": 3, "max_highlight_ratio": 0.30,
                     "max_long_sentence_count": 2, "long_sentence_threshold": 12,
-                    "min_sentence_count": 6, "max_first_sentence_len": 12,
-                    "max_consecutive_same_emotion": 3, "min_funny_ratio": 0.35,
+                    "min_sentence_count": 10, "max_first_sentence_len": 12,
+                    "max_consecutive_same_emotion": 3,
                 },
             },
             "mystery": {
-                "ROLE_PROMPT": self._MYSTERY_ROLE, "FORMAT_SPEC": self._MYSTERY_FORMAT,
-                "CONTENT_RULES": self._MYSTERY_RULES, "FEW_SHOT_EXAMPLES": self._MYSTERY_FEWSHOT,
+                "ROLE_PROMPT": self.ROLE_PROMPT, "FORMAT_SPEC": self.FORMAT_SPEC,
+                "CONTENT_RULES": self.CONTENT_RULES, "FEW_SHOT_EXAMPLES": self.FEW_SHOT_EXAMPLES,
                 "padded_instruction": (
-                    "이 주제로 미스터리/상식 대본을 써줘. "
+                    "이 주제로 동물 미스터리/상식 대본을 써줘. "
                     "처음에 궁금증을 유발하는 질문을 던지고, "
-                    "끝까지 보게 만든 뒤 마지막에 결론을 내줘."
+                    "끝까지 보게 만든 뒤 마지막에 과학적 결론을 내줘."
                 ),
-                "build_prompt_suffix": "위 소스를 바탕으로 궁금증 유발 → 끝까지 보게 만드는 미스터리 숏츠 대본을 JSON으로 출력해.",
-                "image_style": "Mysterious atmosphere, dark moody lighting, hyper-realistic, 4k, cinematic fog, high contrast",
+                "build_prompt_suffix": "위 소스를 바탕으로 궁금증 유발 → 끝까지 보게 만드는 동물 미스터리 숏츠 대본을 JSON으로 출력해.",
+                "image_style": "photorealistic wildlife photography, dramatic lighting, 4k, cinematic, sharp focus",
                 "quality_params": {
                     "min_emotion_types": 3, "max_highlight_ratio": 0.25,
                     "max_long_sentence_count": 2, "long_sentence_threshold": 12,
-                    "min_sentence_count": 6, "max_first_sentence_len": 12,
+                    "min_sentence_count": 10, "max_first_sentence_len": 12,
                     "max_consecutive_same_emotion": 2,
                 },
             },

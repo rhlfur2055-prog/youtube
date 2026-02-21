@@ -116,6 +116,35 @@ BLACKLIST = [
     "주작", "사기", "해킹", "마약",
 ]
 
+# ── 동물 주제 자동 생성 템플릿 ──
+ANIMAL_TEMPLATES = [
+    "왜 {animal}는 {behavior}할까?",
+    "{animal}가 갑자기 {behavior}하는 진짜 이유",
+    "모르면 손해인 {animal} 행동의 비밀",
+    "{animal}가 {behavior}하면 반드시 보세요",
+    "{animal}의 {behavior} 본 적 있나요?",
+    "과학자들도 놀란 {animal}의 {behavior}",
+]
+ANIMALS = [
+    "고양이", "강아지", "비둘기", "까마귀",
+    "문어", "상어", "곰", "여우", "늑대",
+    "돌고래", "고릴라", "치타", "독수리", "뱀",
+]
+BEHAVIORS = [
+    "야옹거리는 이유", "꼬리 흔드는 이유",
+    "눈 마주치는 이유", "갑자기 멈추는 이유",
+    "빙글빙글 도는 이유", "하늘 보는 이유",
+    "혼자 노는 이유", "물 무서워하는 이유",
+]
+
+# 동물 관련 키워드 (트렌드 매칭 + 점수 보너스용)
+ANIMAL_KEYWORDS = [
+    "동물", "고양이", "강아지", "야생동물", "야생", "펫", "반려", "반려동물",
+    "비둘기", "까마귀", "문어", "상어", "곰", "여우", "늑대",
+    "돌고래", "고릴라", "치타", "독수리", "뱀",
+    "새끼", "멍멍이", "냥이", "고냥이", "댕댕이",
+]
+
 # ── 바이럴 부스트 키워드 (차등 점수) ──
 # 조회수 폭발 키워드 → +20,000점
 BOOST_TIER1 = [
@@ -138,6 +167,8 @@ BOOST_KEYWORDS = [
     "연봉", "이직", "알바", "면접", "취준",
     "썸", "소개팅", "결혼", "축의금", "청첩장",
     "연애", "재테크", "고백", "적금", "청약",
+    # v10.2: 동물 콘텐츠
+    "동물", "고양이", "강아지", "야생", "이유", "진짜",
 ]
 
 # ── 숏츠 폭발력 카테고리 (조회수 100만+ 실적 기반) ──
@@ -191,6 +222,14 @@ VIRAL_CATEGORIES = {
         ],
         "boost": 35000,
     },
+    "동물_반려": {
+        "keywords": [
+            "동물", "고양이", "강아지", "야생동물", "야생", "펫", "반려",
+            "비둘기", "까마귀", "문어", "상어", "곰", "여우", "늑대",
+            "멍멍이", "냥이", "댕댕이", "새끼",
+        ],
+        "boost": 45000,
+    },
 }
 
 # ── 숏츠 부적합 감점 패턴 ──
@@ -211,7 +250,7 @@ JUNK_PATTERNS = [
 
 
 # ============================================================
-# TrendSource: 7개 소스 크롤러
+# TrendSource: 크롤러 + 동물 템플릿 생성
 # ============================================================
 
 class TrendSource:
@@ -555,6 +594,26 @@ class TrendSource:
             print(f"  [OK] YouTube API: {len(results)}개 (숏츠 {shorts_count}개)")
         except Exception as e:
             print(f"  [WARN] YouTube API 실패: {e}")
+        return results
+
+    @staticmethod
+    def generate_animal_topics() -> list[dict]:
+        """동물 주제 템플릿 자동 생성 (랜덤 조합 10개)"""
+        import random
+        results = []
+        combos = [
+            (a, b) for a in ANIMALS for b in BEHAVIORS
+        ]
+        random.shuffle(combos)
+        for idx, (animal, behavior) in enumerate(combos[:10]):
+            template = random.choice(ANIMAL_TEMPLATES)
+            topic = template.format(animal=animal, behavior=behavior)
+            results.append({
+                "keyword": topic,
+                "source": "animal_template",
+                "score": 60000 - idx * 1000,  # 높은 기본 점수
+            })
+        print(f"  [OK] 동물 템플릿: {len(results)}개 생성")
         return results
 
     @staticmethod
@@ -1007,6 +1066,9 @@ class TrendFilter:
             # Google Trends 출처 보너스 → +30,000점
             if t.get("source") == "google_trends":
                 t["score"] += 30000
+            # v10.2: 동물 관련 주제 → +30,000점 보너스
+            if any(ak in kw for ak in ANIMAL_KEYWORDS):
+                t["score"] += 30000
         return trends
 
     @staticmethod
@@ -1356,17 +1418,15 @@ def collect_trends(source_filter: str | None = None) -> list[dict]:
     print("STEP 1: 트렌드 수집")
     print("=" * 60)
 
-    # v10.1: 9개 소스 (커뮤니티 잡글 소스 제외)
+    # v10.2: 동물 전문 채널 + 기존 트렌드 소스
     source_map = {
+        "animal": TrendSource.generate_animal_topics,
         "google": TrendSource.fetch_google_trends_rss,
         "naver": TrendSource.fetch_naver_realtime,
         "youtube": TrendSource.fetch_youtube_trending,
         "youtube_api": TrendSource.fetch_youtube_shorts_api,
         "twitter": TrendSource.fetch_twitter_trends,
-        # "natepann": TrendSource.fetch_natepann,    # 제외
-        # "dcinside": TrendSource.fetch_dcinside,    # 제외
         "ruliweb": TrendSource.fetch_ruliweb,
-        # "instiz": TrendSource.fetch_instiz,        # 제외
     }
 
     all_trends: list[dict] = []
