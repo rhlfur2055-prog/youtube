@@ -113,14 +113,23 @@ BLACKLIST = [
     "탈영", "괴담", "실화냐", "충격",
 ]
 
-# ── 바이럴 부스트 키워드 (40+) ──
+# ── 바이럴 부스트 키워드 (차등 점수) ──
+# 조회수 폭발 키워드 → +20,000점
+BOOST_TIER1 = [
+    "실화", "충격", "소름", "반전", "모르는", "꿀팁", "비밀",
+]
+# 관심 유발 키워드 → +10,000점
+BOOST_TIER2 = [
+    "왜", "어떻게", "진짜", "레전드",
+]
+# 기존 범용 부스트 → +20,000점
 BOOST_KEYWORDS = [
-    "레전드", "실화", "대박", "미쳤", "소름", "논란",
-    "반전", "후기", "먹방", "게임", "리뷰",
+    "대박", "미쳤", "논란",
+    "후기", "먹방", "게임", "리뷰",
     "아이돌", "드라마", "영화", "웹툰",
     "밈", "챌린지", "핫", "터짐", "난리",
     "비교", "랭킹", "순위", "VS", "TOP",
-    "꿀팁", "해봄", "써봄", "사봄", "가봄",
+    "해봄", "써봄", "사봄", "가봄",
     "월급", "퇴사", "야근", "자취", "월세", "전세",
     "사회초년생", "직장상사", "꼰대", "MZ", "워라밸",
     "연봉", "이직", "알바", "면접", "취준",
@@ -844,12 +853,24 @@ class TrendFilter:
 
     @staticmethod
     def apply_boost_scoring(trends: list[dict]) -> list[dict]:
-        """바이럴 키워드 부스트 — 키워드당 +20000"""
+        """바이럴 키워드 차등 부스트 + Google Trends 출처 보너스"""
         for t in trends:
             kw = t["keyword"]
-            boost_count = sum(1 for bk in BOOST_KEYWORDS if bk in kw)
-            if boost_count:
-                t["score"] += boost_count * 20000
+            # Tier1: 조회수 폭발 키워드 → +20,000점
+            t1 = sum(1 for bk in BOOST_TIER1 if bk in kw)
+            if t1:
+                t["score"] += t1 * 20000
+            # Tier2: 관심 유발 키워드 → +10,000점
+            t2 = sum(1 for bk in BOOST_TIER2 if bk in kw)
+            if t2:
+                t["score"] += t2 * 10000
+            # 기존 범용 부스트 → +20,000점
+            t3 = sum(1 for bk in BOOST_KEYWORDS if bk in kw)
+            if t3:
+                t["score"] += t3 * 20000
+            # Google Trends 출처 보너스 → +30,000점
+            if t.get("source") == "google_trends":
+                t["score"] += 30000
         return trends
 
     @staticmethod
@@ -994,34 +1015,15 @@ class GeminiConverter:
             for i, c in enumerate(candidates)
         )
 
-        # v6.2: CRAWL_SYSTEM_PROMPT 교체 — 선별 기준 강화 + 탈락 조건 명시
-        prompt = f"""당신은 대한민국 유튜브 숏츠 바이럴 전문 PD입니다.
-매일 트렌드를 분석해 조회수 100만+ 숏츠 주제를 선별합니다.
+        # v7.0: 조회수 3가지 핵심 기준으로 평가
+        prompt = f"""숏츠 조회수 기준 3가지로만 평가해줘:
 
-[선별 기준 - 아래 조건 많을수록 고점수]
-1. 제목만 봐도 1초 안에 클릭하고 싶은가?
-2. "나만 몰랐나?" 공감 유발하는가?
-3. 반전/충격/소름 요소가 있는가?
-4. 15~30초 안에 설명 가능한가?
-5. 10대~30대가 친구한테 공유할 만한가?
+1. 첫 2초 안에 궁금증 유발 가능한가? (0~33점)
+2. 끝까지 안 보면 손해인 느낌인가? (0~33점)
+3. 댓글/공유 욕구가 생기는가? (0~34점)
 
-[즉시 탈락 조건]
-- 정치/선거/종교 관련
-- 특정인 비방/가십
-- 이미 유행 지난 밈 (2주 이상)
-- 너무 전문적이어서 대중성 없음
-- 단순 뉴스 사실 나열
-
-[좋은 주제 예시]
-✅ "월급 200만원인데 강남 사는 사람 실제 비결"
-✅ "편의점 직원만 아는 숨겨진 할인법"
-✅ "한국인 99%가 틀리는 맞춤법"
-✅ "치킨 시킬때 이렇게 하면 서비스 더 줌"
-
-[나쁜 주제 예시]
-❌ "오늘 코스피 하락 이유"
-❌ "정치인 OOO 논란"
-❌ "유명인 열애설"
+[즉시 탈락 = 0점]
+- 정치/선거/종교/가십/단순 뉴스
 
 대상:
 {titles_text}
@@ -1332,8 +1334,19 @@ def main():
         trends = GeminiConverter.evaluate_viral_potential(trends)
         trends.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    # 4) 상위 N개 선택
-    selected = trends[:args.count]
+    # 4) TOP 3 출력 후 상위 N개 선택 (최소 3개 보장)
+    top3 = trends[:3]
+    print("\n" + "=" * 60)
+    print("TOP 3 주제 (점수순)")
+    print("=" * 60)
+    for i, t in enumerate(top3):
+        cat = t.get("_viral_category", "")
+        cat_str = f" [{cat}]" if cat else ""
+        print(f"  🏆 {i+1}위. [{t['score']:,}점]{cat_str} {t['keyword'][:50]}")
+
+    # 최소 3개 + 요청 개수만큼 선택
+    select_count = max(3, args.count)
+    selected = trends[:select_count]
     keywords = [t["keyword"] for t in selected]
 
     # 5) Gemini 주제문 변환 (선택)

@@ -18,5 +18,8 @@ google-api-python-client>=2.100.0
 elevenlabs>=1.0.0
 aiohttp>=3.9.0
 
+# Kling AI image-to-video (선택)
+PyJWT>=2.8.0
+
 # APIFY 크롤링 (선택)
 # apify-client → APIFY_TOKEN

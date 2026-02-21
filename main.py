@@ -736,6 +736,116 @@ class StockVideoFetcher:
 
 
 # ============================================================
+# 🎬 Kling AI Image-to-Video (첫/마지막 장면 동영상화)
+# ============================================================
+class KlingVideoGenerator:
+    """Kling AI API: 정적 이미지 → 5초 동영상 변환 (JWT 인증)"""
+    BASE_URL = "https://api.klingai.com"
+
+    def __init__(self):
+        self.access_key = os.getenv("KLING_ACCESS_KEY", "")
+        self.secret_key = os.getenv("KLING_SECRET_KEY", "")
+        self._token = None
+        self._token_exp = 0
+
+    @property
+    def available(self) -> bool:
+        return bool(self.access_key and self.secret_key)
+
+    def _get_token(self) -> str:
+        """JWT 토큰 생성 (HS256, 1800초 유효)"""
+        import jwt as pyjwt
+        now = time.time()
+        if self._token and now < self._token_exp - 60:
+            return self._token
+        payload = {
+            "iss": self.access_key,
+            "exp": int(now + 1800),
+            "nbf": int(now - 5),
+            "iat": int(now),
+        }
+        self._token = pyjwt.encode(payload, self.secret_key, algorithm="HS256")
+        self._token_exp = now + 1800
+        return self._token
+
+    def generate_video(self, image_path: str, prompt: str,
+                       output_path: str, duration: str = "5") -> bool:
+        """이미지 → 동영상 변환 (동기 폴링, 최대 5분 대기)"""
+        if not self.available:
+            return False
+        try:
+            # 이미지를 base64로 인코딩
+            import base64
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+            ext = os.path.splitext(image_path)[1].lower()
+            mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+            data_uri = f"data:{mime};base64,{img_b64}"
+
+            token = self._get_token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            # 태스크 생성
+            body = {
+                "model_name": "kling-v1",
+                "image": data_uri,
+                "prompt": prompt[:200],
+                "mode": "std",
+                "duration": duration,
+                "cfg_scale": 0.5,
+            }
+            resp = requests.post(
+                f"{self.BASE_URL}/v1/videos/image2video",
+                json=body, headers=headers, timeout=30,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            task_id = result.get("data", {}).get("task_id")
+            if not task_id:
+                print(f"    ⚠️  Kling 태스크 생성 실패: {result}")
+                return False
+
+            print(f"    🎬 Kling 태스크 생성: {task_id}")
+
+            # 폴링 (최대 300초)
+            for _ in range(60):
+                time.sleep(5)
+                token = self._get_token()
+                headers["Authorization"] = f"Bearer {token}"
+                qr = requests.get(
+                    f"{self.BASE_URL}/v1/videos/image2video/{task_id}",
+                    headers=headers, timeout=15,
+                )
+                qr.raise_for_status()
+                status_data = qr.json().get("data", {})
+                task_status = status_data.get("task_status", "")
+
+                if task_status == "succeed":
+                    videos = status_data.get("task_result", {}).get("videos", [])
+                    if videos:
+                        video_url = videos[0].get("url", "")
+                        if video_url:
+                            vr = requests.get(video_url, timeout=60)
+                            vr.raise_for_status()
+                            with open(output_path, "wb") as f:
+                                f.write(vr.content)
+                            print(f"    ✅ Kling 동영상 완료: {output_path}")
+                            return True
+                    return False
+                elif task_status == "failed":
+                    err = status_data.get("task_status_msg", "unknown")
+                    print(f"    ⚠️  Kling 실패: {err}")
+                    return False
+            print(f"    ⚠️  Kling 타임아웃 (300초)")
+            return False
+        except Exception as e:
+            print(f"    ⚠️  Kling 예외: {str(e)[:100]}")
+            return False
+
+
+# ============================================================
 # 🖼️ AI 이미지 생성기 (Pollinations.ai 무료 + DALL-E 폴백)
 # ============================================================
 class ImageGenerator:
@@ -810,6 +920,10 @@ class ImageGenerator:
         # v6.0: GoAPI Midjourney (0순위)
         self._goapi = None
         self._goapi_failed = False
+        # v10.0: Kling AI image-to-video (첫/마지막 장면)
+        self._kling = KlingVideoGenerator()
+        if self._kling.available:
+            print(f"  🎬 Kling AI 연동 완료 (첫/마지막 장면 동영상화)")
 
     def _get_bing_creator(self):
         """Bing Image Creator 인스턴스 (lazy init, 브라우저 1개 재사용)"""
@@ -964,6 +1078,26 @@ class ImageGenerator:
 
         ok_count = sum(1 for r in results if r["image_path"])
         print(f"  ✅ 장면 이미지 완료: {ok_count}/{len(scene_groups)}장 생성")
+
+        # ★ v10.0: Kling AI — 첫/마지막 장면만 image-to-video 변환
+        if self._kling.available and results:
+            kling_targets = []
+            if results[0].get("image_path"):
+                kling_targets.append((0, results[0]))
+            if len(results) > 1 and results[-1].get("image_path"):
+                kling_targets.append((len(results) - 1, results[-1]))
+
+            for idx, r in kling_targets:
+                img_path = r["image_path"]
+                vid_path = img_path.rsplit(".", 1)[0] + "_kling.mp4"
+                prompt_text = r.get("prompt", "cinematic slow motion")
+                print(f"  🎬 Kling AI 동영상 변환 [{idx+1}/{len(results)}]...")
+                ok = self._kling.generate_video(img_path, prompt_text, vid_path)
+                if ok:
+                    r["kling_video"] = vid_path
+                else:
+                    print(f"    ⚠️  Kling 실패 → Bing 이미지 유지 (폴백)")
+
         return results
 
     # ── 문장 그루핑 ──
@@ -3535,20 +3669,22 @@ Step 3. AI 시각화: 모든 image_prompt는 영어로, 아래 키워드를 조�
 [핵심 규칙 3개]
 1. 첫 문장 = 12자 이내 강렬한 감탄/질문 ("아 진짜 미쳤음" "이게 사람이냐")
 2. 감정 롤러코스터 필수: shocked→sad→tension→angry→funny→neutral (6종+ 사용, 같은 감정 2연속까지만)
-3. highlight는 전체의 25% 이하 (12문장이면 3개 이하). 진짜 핵심 반전/펀치라인만.
+3. highlight는 최대 2개만 true. 진짜 핵심 반전/펀치라인만.
 
 [말투]
 - 어미: ~임, ~음, ~거든, ~잖아, ~인데 (반말 통일)
 - 추임새: 아니, 진짜, ㅋㅋㅋ, ㄹㅇ, 아 근데, 헐
 - 금지어: 흥미롭, 놀라운, 충격적, 알아보겠, 살펴보겠, 결론적으로, 하겠습니다
-- text 한국어만. image_prompt 영어만.
+- text 한국어만 15자 이내. image_prompt 영어만.
 
-[image_prompt — 영어 필수]
-- 기본 키워드: Cinematic, 8k, High Contrast, Korean webtoon style, bold outlines
-- 첫 장면: "Young Korean [성별], [머리], [체형], [옷], [표정], extreme close-up, cinematic lighting, 8k, Korean webtoon style, bold outlines"
-- 2장면+: "Same character as scene 1, ..." 필수
-- 표정 강도 90+: jaw dropped / face burning red / veins popping / tears streaming
-- 구도: extreme close-up / low angle / wide shot / over-the-shoulder
+[image_prompt — 절대 규칙]
+- 주제와 100% 연관된 장면만 묘사 (무관한 이미지 금지)
+- "Same character as scene 1" 절대 금지! 매 장면 독립적 묘사.
+- 매 장면 카메라 앵글 달라야 함: extreme close-up / bird's eye / low angle / wide shot / over-the-shoulder / dutch angle / tracking shot
+- 기본: Cinematic, 8k, High Contrast, Korean webtoon style, bold outlines
+- 첫 장면: "Young Korean [성별], [머리], [체형], [옷], [표정], extreme close-up, cinematic lighting, 8k, Korean webtoon style"
+- 이후 장면: 캐릭터 외모를 매번 직접 묘사 (키, 머리, 옷 반복 OK)
+- 표정: jaw dropped / face burning red / veins popping / tears streaming
 - 조명: cinematic lighting, high contrast, dramatic red backlight / single spotlight"""
 
     # ── [2/3] FORMAT_SPEC: JSON 스키마 (간결하게) ──
@@ -3561,13 +3697,13 @@ Step 3. AI 시각화: 모든 image_prompt는 영어로, 아래 키워드를 조�
   "script": [
     {
       "scene_number": 1,
-      "text": "한국어 대사 20자 이내",
+      "text": "한국어 대사 15자 이내",
       "emotion": "shocked",
       "highlight": true,
       "pause_ms": 800,
       "important_words": ["핵심단어"],
       "direction": "BGM+연출 지시 (한국어)",
-      "image_prompt": "영어 장면 묘사 (English only)",
+      "image_prompt": "영어 장면 묘사 (English only, 주제 연관 필수, Same character 금지, 카메라 앵글 매번 다르게)",
       "sfx": "gasp",
       "sfx_volume": 0.4
     }
@@ -3575,12 +3711,12 @@ Step 3. AI 시각화: 모든 image_prompt는 영어로, 아래 키워드를 조�
 }
 emotion 허용값: neutral, tension, surprise, angry, sad, funny, shocked, excited, warm, serious, whisper, relief
 sfx 허용값: laugh, rimshot, boing, punch, glass_break, thunder, dramatic_stinger, whoosh, ding, swoosh, gasp, crowd_ooh, record_scratch, kakao_alert, typing, ddiyong (없으면 "")
-highlight: 전체의 25% 이하만 true. 나머지는 false."""
+highlight: 최대 2개만 true. 나머지는 false."""
 
     # ── [3/3] CONTENT_RULES: 구조 + 금지사항 (핵심만) ──
-    CONTENT_RULES = """[Pace] 1초당 3.5음절. 한 문장 20자 이내 엄수. 미사여구 삭제.
+    CONTENT_RULES = """[Pace] 1초당 3.5음절. 한 문장 15자 이내 엄수. 미사여구 삭제.
 
-[대본 구조 — 12~16문장]
+[대본 구조 — 12~15개 장면 (60초 목표)]
 Act1 훅 (1~2문장): shocked/excited. 첫문장 12자↓. sfx: gasp or glass_break. pause_ms: 0.
 Act2 빌드업 (3~5문장): sad→tension. 공감 디테일. direction에 "불협화음 BGM" 명시.
 Act3 피크 (2~3문장): angry. 감정 폭발. sfx: punch. pause_ms: 800~1200 (음소거 효과). highlight: true.
@@ -3589,7 +3725,7 @@ Act5 CTA (1문장): neutral. 댓글 유도 질문. pause_ms: 0.
 
 [필수 체크]
 - 같은 감정 최대 2연속. 6종류+ 감정 사용.
-- highlight: 전체의 25% 이하 (Act3 피크 + Act4 반전에만)
+- highlight: 최대 2개만 (Act3 피크 + Act4 반전에만)
 - important_words: 매 문장 1~2개. 금액/인물/핵심명사.
 - direction: 매 장면 BGM 상태 명시 ("브금 유지" "브금 멈춤" "비장한 음악 IN")
 - sfx: 전체 3~5개만 (매 장면 넣지 마. 피크에만.)
@@ -5675,11 +5811,12 @@ class VideoAssembler:
     def _render_subtitle(self, frame: Image.Image, chunk: dict,
                           current_ms: float) -> Image.Image:
         """
-        v9.0 현대적 자막 (2024~2025 숏츠 트렌드)
-        ★ 노란 박스 제거 → 흰색 텍스트 + 두꺼운 검정 외곽선 + 드롭 섀도우
-        ─ important_words: 빨간색(#FF3B30) + 살짝 큰 폰트 + glow
-        ─ highlight 문장: 노란색(#FFD60A) + 스케일 1.15x + 팝업
-        ─ 위치: 화면 하단 72% (더 아래로)
+        v10.0 자막 개선
+        ─ 폰트: 기존 대비 1.4배 크게
+        ─ 반투명 검정 배경박스 (opacity 0.6)
+        ─ important_words: 노란색(#FFD700) + glow
+        ─ highlight: 노란색(#FFD60A) + 스케일 1.15x
+        ─ 위치: 화면 하단 15% 고정 (85%)
         ─ 줄바꿈: 단어 경계 기준
         ─ 애니메이션: cubic-bezier 바운스 등장
         """
@@ -5701,20 +5838,24 @@ class VideoAssembler:
             alpha = remaining / fade_out_ms
         alpha = max(0.0, min(1.0, alpha))
 
-        # ── 폰트 ──
-        base_font_size = int(self.config.font_size * 1.4)
+        # ── 폰트 (v10.0: 1.4배 크기 증가) ──
+        base_font_size = int(self.config.font_size * 1.96)  # 56 * 1.96 ≈ 110px
+        # 첫 자막 1.6배 (오프닝 임팩트)
+        chunk_idx = chunk.get("chunk_idx", -1)
+        if chunk_idx == 0:
+            base_font_size = int(base_font_size * 1.6)
         if is_highlight:
             base_font_size = int(base_font_size * 1.15)
         font = FontManager.get_shorts_font(base_font_size)
         font_big = FontManager.get_shorts_font(int(base_font_size * 1.15))
-        stroke_px = 4  # 두꺼운 검정 외곽선 (가독성 핵심)
+        stroke_px = 4
 
-        # ── 색상 (박스 없음 — 외곽선으로 가독성 확보) ──
+        # ── 색상 ──
         if is_highlight:
             text_color = (255, 214, 10)       # 노란색 (#FFD60A)
         else:
             text_color = (255, 255, 255)       # 흰색
-        imp_color = (255, 59, 48)              # 빨간색 (#FF3B30) — important_words
+        imp_color = (255, 215, 0)              # 노란색 (#FFD700) — important_words
 
         has_kinetic = bool(important_words)
 
@@ -5733,8 +5874,8 @@ class VideoAssembler:
         line_gap = 10
         total_h = sum(line_heights) + (len(lines) - 1) * line_gap
 
-        # ── 위치: 하단 72% (더 아래로 — 영상 중심 안 가림) ──
-        text_block_y = int(self.h * 0.72)
+        # ── 위치: 하단 85% (화면 하단 15% 고정) ──
+        text_block_y = int(self.h * 0.85) - total_h
 
         # ── 등장 애니메이션: cubic-bezier(0.34, 1.56, 0.64, 1) 바운스 ──
         if elapsed < fade_in_ms:
@@ -5758,7 +5899,20 @@ class VideoAssembler:
         a = int(255 * alpha)
         shadow_a = int(150 * alpha)
 
-        # ── 텍스트 렌더링 (박스 없음! 외곽선 + 그림자만) ──
+        # ── 반투명 검정 배경박스 (opacity 0.6) ──
+        max_line_w = max(line_widths) if line_widths else 0
+        pad_x, pad_y = 30, 16
+        box_x1 = (self.w - max_line_w) // 2 - pad_x
+        box_y1 = text_block_y - pad_y
+        box_x2 = (self.w + max_line_w) // 2 + pad_x
+        box_y2 = text_block_y + total_h + pad_y
+        box_alpha = int(153 * alpha)  # 0.6 * 255 = 153
+        draw.rounded_rectangle(
+            [box_x1, box_y1, box_x2, box_y2],
+            radius=12, fill=(0, 0, 0, box_alpha),
+        )
+
+        # ── 텍스트 렌더링 ──
         text_y = text_block_y
         for i, line in enumerate(lines):
             segments = self._segment_important(line, important_words)
@@ -5795,7 +5949,7 @@ class VideoAssembler:
                            stroke_width=stroke_px,
                            stroke_fill=(0, 0, 0, int(240 * alpha)))
 
-                # 3) important_words glow 효과 (빨간 글자에 추가 강조)
+                # 3) important_words glow 효과 (노란 글자에 추가 강조)
                 if is_imp and has_kinetic:
                     glow_a = int(60 * alpha * bounce_scale)
                     draw.text((cursor_x, seg_y), seg_text, font=seg_font,
@@ -5899,6 +6053,16 @@ class VideoAssembler:
                 except Exception:
                     img_cache[ipath] = None
 
+        # 장면 전환 시간 계산 (장면별 highlight/emotion 매핑)
+        _scene_highlights = {}
+        for img_info in ai_images:
+            sidx = img_info["chunk_idx"]
+            if sidx < len(chunks):
+                _scene_highlights[img_info.get("image_path")] = chunks[sidx].get("highlight", False)
+
+        prev_scene_idx = -1
+        prev_frame = None
+
         for frame_idx in range(total_frames):
             current_ms = (frame_idx / self.config.fps) * 1000
 
@@ -5929,6 +6093,36 @@ class VideoAssembler:
                                            scene_start_ms, scene_end_ms, scene_idx,
                                            emotion=cur_emotion)
 
+            # ★ 장면 전환 효과 (crossfade / 흑백→컬러 / 빠른컷)
+            if scene_idx != prev_scene_idx and prev_scene_idx >= 0 and prev_frame:
+                elapsed_in_scene = current_ms - scene_start_ms
+                is_highlight = _scene_highlights.get(current_img_path, False)
+
+                if cur_emotion == "shocked":
+                    # shocked: 빠른 컷 0.1초 (3프레임)
+                    trans_ms = 100
+                elif is_highlight:
+                    # highlight: 흑백→컬러 전환 0.3초
+                    trans_ms = 300
+                else:
+                    # 기본: crossfade 0.3초
+                    trans_ms = 300
+
+                if elapsed_in_scene < trans_ms:
+                    blend_ratio = elapsed_in_scene / trans_ms
+                    if is_highlight and cur_emotion != "shocked":
+                        # 흑백→컬러: 이전 프레임을 흑백으로 변환 후 블렌드
+                        from PIL import ImageOps
+                        gray_prev = ImageOps.grayscale(prev_frame).convert("RGB")
+                        frame = Image.blend(gray_prev, frame, blend_ratio)
+                    else:
+                        # 일반 crossfade
+                        frame = Image.blend(prev_frame, frame, blend_ratio)
+
+            if scene_idx != prev_scene_idx:
+                prev_scene_idx = scene_idx
+            prev_frame = frame.copy()
+
             # Dimming (이미지 위 자막 가독성)
             overlay_dim = Image.new("RGBA", (self.w, self.h), (0, 0, 0, 50))
             frame = frame.convert("RGBA")
@@ -5950,8 +6144,12 @@ class VideoAssembler:
             if 0 <= remaining_sec <= 2.0:
                 frame = self._render_cta_outro(frame, remaining_sec)
 
-            # ★ 장면 전환: 검은 페이드 제거 (깜빡임 방지)
-            # Ken Burns 효과만으로 장면이 자연스럽게 전환됨
+            # ★ 엔딩 페이드아웃: 마지막 1.5초 영상 fade to black
+            if remaining_sec <= 1.5 and remaining_sec > 0:
+                fade_alpha = int(255 * (1.0 - remaining_sec / 1.5))
+                fade_overlay = Image.new("RGBA", (self.w, self.h), (0, 0, 0, fade_alpha))
+                frame = frame.convert("RGBA")
+                frame = Image.alpha_composite(frame, fade_overlay).convert("RGB")
 
             # 저장
             frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.jpg")
@@ -5984,6 +6182,7 @@ class VideoAssembler:
             "-profile:v", "high", "-level", "4.1",
             "-maxrate", "8000k", "-bufsize", "8000k",
             "-c:a", "aac", "-b:a", "256k", "-ar", "44100",
+            "-af", f"afade=t=out:st={max(0, total_sec - 1.5):.1f}:d=1.5",
             "-pix_fmt", "yuv420p", "-shortest",
             "-movflags", "+faststart",
             "-metadata", f"title={script_data.get('title', 'Shorts')}",
@@ -6022,19 +6221,26 @@ class VideoAssembler:
     def _apply_ken_burns(self, frame: Image.Image, current_ms: float,
                           scene_start: float, scene_end: float,
                           scene_idx: int, emotion: str = "neutral") -> Image.Image:
-        """v9.0 Ken Burns: 감정 연동 줌 + 랜덤 pan 방향"""
+        """v10.0 Ken Burns: 감정 연동 줌 + 오프닝 강화"""
         scene_duration = max(scene_end - scene_start, 1)
         progress = (current_ms - scene_start) / scene_duration
         progress = max(0.0, min(1.0, progress))
 
-        # 감정별 모션 프로필
-        profile = self._MOTION_PROFILES.get(emotion, self._MOTION_PROFILES["neutral"])
-        s_start = profile["scale_start"]
-        s_end = profile["scale_end"]
-
-        # ease-out 곡선 (빠르게 시작 → 천천히 끝)
-        eased = 1 - (1 - progress) ** 2
-        scale = s_start + (s_end - s_start) * eased
+        # ★ 오프닝 강화: 첫 장면 2초 줌아웃→줌인 (1.3x → 1.0x → 1.1x)
+        if scene_idx == 0 and current_ms < 2000:
+            t = current_ms / 2000
+            # ease-in-out: 줌아웃(1.3x) → 줌인(1.05x)
+            s_start = 1.30
+            s_end = 1.05
+            eased = 1 - (1 - t) ** 3  # ease-out cubic
+            scale = s_start + (s_end - s_start) * eased
+        else:
+            # 감정별 모션 프로필
+            profile = self._MOTION_PROFILES.get(emotion, self._MOTION_PROFILES["neutral"])
+            s_start = profile["scale_start"]
+            s_end = profile["scale_end"]
+            eased = 1 - (1 - progress) ** 2
+            scale = s_start + (s_end - s_start) * eased
 
         w, h = frame.size
         new_w = int(w * scale)
@@ -6268,11 +6474,11 @@ class VideoAssembler:
             abs_voice = os.path.abspath(mastered_voice)
             abs_bgm = os.path.abspath(bgm_file)
 
-            # Sidechain: threshold=0.008 ratio=20 → voice시 BGM -20dB
+            # Sidechain: TTS 구간 BGM 30%로 감소 (attack 10ms, release 200ms)
             duck_filter = (
-                "[1:a]acompressor=threshold=0.008:ratio=20:attack=20:release=300"
+                "[1:a]acompressor=threshold=0.008:ratio=20:attack=10:release=200"
                 ":detection=peak:link=average:level_sc=1[bgm_ducked];"
-                "[0:a][bgm_ducked]amix=inputs=2:weights=1 0.25:duration=shortest"
+                "[0:a][bgm_ducked]amix=inputs=2:weights=1 0.15:duration=shortest"
             )
             r2 = subprocess.run([
                 FFMPEG_PATH, "-y",
